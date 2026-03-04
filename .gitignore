@@ -1,0 +1,22 @@
+# Build
+build/
+out/
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
+NUL
+
+# Claude
+.claude/
+
+# Test artifacts
+output.h264
+output.hevc
+*.mp4

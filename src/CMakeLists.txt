@@ -1,0 +1,6 @@
+add_subdirectory(common)
+add_subdirectory(capture)
+add_subdirectory(codec)
+add_subdirectory(transport)
+add_subdirectory(jitter_buffer)
+add_subdirectory(renderer)
