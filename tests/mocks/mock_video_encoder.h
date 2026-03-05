@@ -46,6 +46,16 @@ public:
         return {};
     }
 
+    Result<void> SetFrameRate(uint32_t fps) override {
+        config_.fps = fps;
+        return {};
+    }
+
+    Result<void> Reconfigure(const VideoEncoderConfig& new_config) override {
+        config_ = new_config;
+        return {};
+    }
+
     VideoCodec GetCodec() const override { return config_.codec; }
 
     // Test helpers

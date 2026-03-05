@@ -8,6 +8,7 @@
 #include <mfidl.h>
 #include <mftransform.h>
 #include <codecapi.h>
+#include <strmif.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -34,6 +35,8 @@ public:
     void SetOutputCallback(EncodedPacketCallback callback) override;
     void RequestKeyframe() override;
     Result<void> SetBitrate(uint32_t bitrate_bps) override;
+    Result<void> SetFrameRate(uint32_t fps) override;
+    Result<void> Reconfigure(const VideoEncoderConfig& new_config) override;
     VideoCodec GetCodec() const override;
 
     // IUnknown
@@ -63,6 +66,7 @@ private:
     D3D11DeviceContext& device_ctx_;
     ComPtr<IMFTransform> encoder_;
     ComPtr<IMFMediaEventGenerator> event_gen_;
+    ComPtr<ICodecAPI> codec_api_;
 
     VideoEncoderConfig config_;
     EncodedPacketCallback output_callback_;

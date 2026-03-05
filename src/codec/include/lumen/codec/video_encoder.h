@@ -53,6 +53,13 @@ public:
     /// Dynamically change bitrate (in bits per second).
     virtual Result<void> SetBitrate(uint32_t bitrate_bps) = 0;
 
+    /// Dynamically change frame rate.
+    virtual Result<void> SetFrameRate(uint32_t fps) = 0;
+
+    /// Reconfigure the encoder (resolution, codec, or other major changes).
+    /// May cause a brief interruption while the encoder is torn down and rebuilt.
+    virtual Result<void> Reconfigure(const VideoEncoderConfig& new_config) = 0;
+
     /// Return the codec this encoder produces.
     virtual VideoCodec GetCodec() const = 0;
 };

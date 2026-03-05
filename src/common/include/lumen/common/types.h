@@ -54,9 +54,14 @@ struct VideoEncoderConfig {
     uint32_t height = 1080;
     uint32_t fps = 60;
     uint32_t bitrate_bps = 8'000'000;
+    uint32_t peak_bitrate_bps = 0;            // VBR peak; 0 = 1.5x mean
+    uint32_t gop_size_frames = 0;             // 0 = driver default
     VideoCodec codec = VideoCodec::kH264;
     RateControlMode rate_control = RateControlMode::kCBR;
     bool low_latency = true;
+    bool intra_refresh = false;
+    uint32_t intra_refresh_period_frames = 60;
+    uint32_t max_slice_size_bytes = 0;        // 0 = disabled
 };
 
 /// An encoded video packet (bitstream data on CPU).

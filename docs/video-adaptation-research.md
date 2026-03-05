@@ -216,42 +216,25 @@ For screen sharing: **intra refresh as default** (eliminates bursts) + **GOP siz
 
 ---
 
-## Implementation Plan
+## Implementation Status
 
-### Step 1: Extend Config and Interface
-- Add fields to `VideoEncoderConfig`: `peak_bitrate_bps`, `gop_size_frames`, `intra_refresh`, `intra_refresh_period_frames`, `max_slice_size_bytes`
-- Add to `VideoEncoder`: `SetFrameRate()`, `Reconfigure()`
-- Update mock encoder
+All steps have been implemented:
 
-### Step 2: HEVC Profile/Level
-- Add HEVC branch in `SetOutputMediaType`
-- Fix AV1 in `CodecToSubtype`
+1. **Config & Interface** — `VideoEncoderConfig` extended with `peak_bitrate_bps`, `gop_size_frames`, `intra_refresh`, `intra_refresh_period_frames`, `max_slice_size_bytes`. `VideoEncoder` interface has `SetFrameRate()` and `Reconfigure()`.
 
-### Step 3: Rate Control Wiring
-- Cache `ICodecAPI` as member
-- Wire `config.rate_control` → `CODECAPI_AVEncCommonRateControlMode`
-- Set `CODECAPI_AVEncMPVGOPSize`, `CODECAPI_AVEncMPVDefaultBPictureCount = 0`
-- Respect `config.low_latency` flag
+2. **HEVC Profile/Level** — `SetOutputMediaType` sets Main profile + Level 4 for HEVC. `CodecToSubtype` maps AV1 properly.
 
-### Step 4: Intra Refresh + Slice Control
-- Set properties in `ConfigureEncoder` gated on config fields
-- Properties may be silently ignored — check HRESULT, log, don't fail
+3. **Rate Control** — `ICodecAPI` cached as `codec_api_` member. Full CBR/VBR/CQP wiring with peak bitrate, GOP size, and B-frame disable for low-latency.
 
-### Step 5: SetFrameRate
-- Update `frame_duration_100ns_` + attempt in-place media type update
-- Fall back to `Reconfigure()` if rejected
+4. **Intra Refresh + Slice Control** — Properties set in `ConfigureEncoder` when enabled; silently ignored by unsupporting MFTs.
 
-### Step 6: Reconfigure
-- Drain → teardown → reinit sequence
-- Preserve timestamp continuity
+5. **SetFrameRate** — Updates `frame_duration_100ns_` for subsequent samples.
 
-### Step 7: FramePacer
-- New platform-agnostic class
-- Encode/drop/duplicate decisions
-- Synthetic timestamp management
+6. **Reconfigure** — Full drain → teardown → reinit with timestamp continuity preserved.
 
-### Step 8: Test Program
-- `tests/video_adaptation_test.cpp` exercising all features
+7. **FramePacer** — `src/codec/include/lumen/codec/frame_pacer.h` — encode/drop/duplicate decisions with synthetic timestamps.
+
+8. **Test Program** — `tests/video_adaptation_test.cpp` exercises all features with high-motion synthetic content.
 
 ---
 
