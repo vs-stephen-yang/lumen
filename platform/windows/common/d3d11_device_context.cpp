@@ -200,4 +200,66 @@ Result<ComPtr<ID3D11Texture2D>> D3D11DeviceContext::CreateNV12Texture(
     return texture;
 }
 
+Result<ComPtr<ID3D11Texture2D>> D3D11DeviceContext::CreateRGBATexture(
+    uint32_t width, uint32_t height) {
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = 0;
+
+    ComPtr<ID3D11Texture2D> texture;
+    HRESULT hr = device_->CreateTexture2D(&desc, nullptr, &texture);
+    if (FAILED(hr)) {
+        return Error::Make(ErrorCode::kDeviceCreationFailed,
+                           "CreateTexture2D (BGRA) failed: " + HResultToString(hr));
+    }
+    return texture;
+}
+
+Result<D3D11DeviceContext::SharedTexture> D3D11DeviceContext::CreateSharedBGRATexture(
+    uint32_t width, uint32_t height) {
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+
+    ComPtr<ID3D11Texture2D> texture;
+    HRESULT hr = device_->CreateTexture2D(&desc, nullptr, &texture);
+    if (FAILED(hr)) {
+        return Error::Make(ErrorCode::kDeviceCreationFailed,
+                           "CreateTexture2D (shared BGRA) failed: " + HResultToString(hr));
+    }
+
+    // Get the DXGI shared handle for cross-device access.
+    ComPtr<IDXGIResource> dxgi_resource;
+    hr = texture.As(&dxgi_resource);
+    if (FAILED(hr)) {
+        return Error::Make(ErrorCode::kDeviceCreationFailed,
+                           "QueryInterface IDXGIResource failed: " + HResultToString(hr));
+    }
+
+    HANDLE shared_handle = nullptr;
+    hr = dxgi_resource->GetSharedHandle(&shared_handle);
+    if (FAILED(hr)) {
+        return Error::Make(ErrorCode::kDeviceCreationFailed,
+                           "GetSharedHandle failed: " + HResultToString(hr));
+    }
+
+    return SharedTexture{std::move(texture), shared_handle};
+}
+
 }  // namespace lumen

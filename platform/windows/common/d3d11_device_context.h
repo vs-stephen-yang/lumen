@@ -45,6 +45,22 @@ public:
     Result<ComPtr<ID3D11Texture2D>> CreateNV12Texture(
         uint32_t width, uint32_t height);
 
+    /// Create a BGRA texture suitable as color conversion output or render target.
+    /// Bind flags: RENDER_TARGET | SHADER_RESOURCE.
+    Result<ComPtr<ID3D11Texture2D>> CreateRGBATexture(
+        uint32_t width, uint32_t height);
+
+    /// A texture with a DXGI shared handle for cross-device sharing.
+    struct SharedTexture {
+        ComPtr<ID3D11Texture2D> texture;
+        HANDLE shared_handle = nullptr;
+    };
+
+    /// Create a BGRA texture with D3D11_RESOURCE_MISC_SHARED flag and return
+    /// both the texture and its DXGI shared handle for cross-device GPU sharing.
+    Result<SharedTexture> CreateSharedBGRATexture(
+        uint32_t width, uint32_t height);
+
     ID3D11Device* Device() const { return device_.Get(); }
     ID3D11DeviceContext* Context() const { return context_.Get(); }
     ID3D11VideoDevice* VideoDevice() const { return video_device_.Get(); }

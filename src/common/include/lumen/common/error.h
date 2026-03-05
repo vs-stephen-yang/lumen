@@ -16,6 +16,8 @@ enum class ErrorCode {
     kAccessLost,          // DXGI desktop duplication session lost
     kTimeout,             // Frame acquisition timed out (no desktop change)
     kEncoderError,
+    kDecoderError,
+    kRendererError,
     kColorConversionError,
     kInvalidArgument,
     kUnsupported,

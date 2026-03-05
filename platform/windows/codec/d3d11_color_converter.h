@@ -11,11 +11,12 @@ class D3D11DeviceContext;
 
 /// GPU color space conversion using the D3D11 Video Processor.
 ///
-/// Converts BGRA → NV12 using the fixed-function video processing hardware
-/// present on all D3D11 GPUs. Typical latency: <1ms.
+/// Supports bidirectional conversion:
+///   - BGRA → NV12 (capture → encode path)
+///   - NV12 → BGRA (decode → render path)
 ///
-/// This is the universal fallback path. NVIDIA users may skip this step
-/// since NVENC can accept BGRA input directly.
+/// Uses the fixed-function video processing hardware present on all D3D11
+/// GPUs. Typical latency: <1ms.
 class D3D11ColorConverter : public ColorConverter {
 public:
     explicit D3D11ColorConverter(D3D11DeviceContext& device_ctx);

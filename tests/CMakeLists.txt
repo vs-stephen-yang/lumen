@@ -31,4 +31,15 @@ if(WIN32)
     target_link_libraries(video_adaptation_test PRIVATE
         lumen_platform_windows
     )
+
+    add_executable(decode_render_test
+        decode_render_test.cpp
+    )
+    target_include_directories(decode_render_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/mocks
+    )
+    target_link_libraries(decode_render_test PRIVATE
+        lumen_platform_windows
+    )
 endif()

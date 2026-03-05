@@ -13,9 +13,11 @@ Result<void> D3D11ColorConverter::Initialize(
     PixelFormat output_format,
     void* /*device*/) {
 
-    if (output_format != PixelFormat::kNV12) {
+    if (output_format != PixelFormat::kNV12 &&
+        output_format != PixelFormat::kBGRA &&
+        output_format != PixelFormat::kRGBA) {
         return Error::Make(ErrorCode::kUnsupported,
-                           "Only NV12 output is supported");
+                           "Unsupported output format");
     }
 
     width_ = input_desc.width;
@@ -55,10 +57,10 @@ Result<void> D3D11ColorConverter::Initialize(
 Result<void> D3D11ColorConverter::Convert(
     void* input_texture, void* output_texture) {
 
-    auto* bgra_texture = static_cast<ID3D11Texture2D*>(input_texture);
-    auto* nv12_texture = static_cast<ID3D11Texture2D*>(output_texture);
+    auto* in_texture = static_cast<ID3D11Texture2D*>(input_texture);
+    auto* out_texture = static_cast<ID3D11Texture2D*>(output_texture);
 
-    // Create input view (BGRA source).
+    // Create input view.
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC input_view_desc = {};
     input_view_desc.FourCC = 0;
     input_view_desc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
@@ -66,26 +68,26 @@ Result<void> D3D11ColorConverter::Convert(
 
     ComPtr<ID3D11VideoProcessorInputView> input_view;
     HRESULT hr = device_ctx_.VideoDevice()->CreateVideoProcessorInputView(
-        bgra_texture, vp_enum_.Get(), &input_view_desc, &input_view);
+        in_texture, vp_enum_.Get(), &input_view_desc, &input_view);
     if (FAILED(hr)) {
         return Error::Make(ErrorCode::kColorConversionError,
                            "CreateVideoProcessorInputView failed");
     }
 
-    // Create output view (NV12 target).
+    // Create output view.
     D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC output_view_desc = {};
     output_view_desc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
     output_view_desc.Texture2D.MipSlice = 0;
 
     ComPtr<ID3D11VideoProcessorOutputView> output_view;
     hr = device_ctx_.VideoDevice()->CreateVideoProcessorOutputView(
-        nv12_texture, vp_enum_.Get(), &output_view_desc, &output_view);
+        out_texture, vp_enum_.Get(), &output_view_desc, &output_view);
     if (FAILED(hr)) {
         return Error::Make(ErrorCode::kColorConversionError,
                            "CreateVideoProcessorOutputView failed");
     }
 
-    // Execute the blit (BGRA → NV12).
+    // Execute the blit (format-agnostic — works for BGRA→NV12 and NV12→BGRA).
     D3D11_VIDEO_PROCESSOR_STREAM stream = {};
     stream.Enable = TRUE;
     stream.pInputSurface = input_view.Get();

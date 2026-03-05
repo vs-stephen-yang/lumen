@@ -70,4 +70,23 @@ struct EncodedPacket {
     FrameMetadata metadata;
 };
 
+/// Configuration for video decoding.
+struct VideoDecoderConfig {
+    VideoCodec codec = VideoCodec::kH264;
+    uint32_t width = 1920;
+    uint32_t height = 1080;
+    uint32_t fps = 60;
+    bool low_latency = true;
+};
+
+/// A decoded video frame backed by a GPU texture.
+struct DecodedFrame {
+    void* native_texture = nullptr;      // Platform texture (e.g. ID3D11Texture2D*)
+    uint32_t subresource_index = 0;      // Texture array slice index
+    uint32_t width = 0;
+    uint32_t height = 0;
+    PixelFormat format = PixelFormat::kNV12;
+    uint64_t frame_index = 0;
+};
+
 }  // namespace lumen

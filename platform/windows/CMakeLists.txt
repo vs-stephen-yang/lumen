@@ -6,6 +6,8 @@ add_library(lumen_platform_windows STATIC
     capture/dxgi_desktop_duplication.cpp
     codec/d3d11_color_converter.cpp
     codec/mf_video_encoder.cpp
+    codec/mf_video_decoder.cpp
+    renderer/d3d11_swapchain_renderer.cpp
 )
 
 target_include_directories(lumen_platform_windows PUBLIC
@@ -16,6 +18,7 @@ target_link_libraries(lumen_platform_windows PUBLIC
     lumen_common
     lumen_capture
     lumen_codec
+    lumen_renderer
     d3d11
     dxgi
     mfplat
