@@ -22,6 +22,9 @@ enum class ErrorCode {
     kInvalidArgument,
     kUnsupported,
     kOutOfMemory,
+    kAudioCaptureError,
+    kAudioEncoderError,
+    kAudioDecoderError,
 };
 
 /// Lightweight error type carrying a code and optional message.

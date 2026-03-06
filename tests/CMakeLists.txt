@@ -42,4 +42,17 @@ if(WIN32)
     target_link_libraries(decode_render_test PRIVATE
         lumen_platform_windows
     )
+
+    add_executable(audio_capture_encode_test
+        audio_capture_encode_test.cpp
+    )
+    target_include_directories(audio_capture_encode_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/mocks
+        ${CMAKE_SOURCE_DIR}/platform/windows
+        ${CMAKE_SOURCE_DIR}/src/codec
+    )
+    target_link_libraries(audio_capture_encode_test PRIVATE
+        lumen_platform_windows
+    )
 endif()

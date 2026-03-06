@@ -22,6 +22,18 @@ enum class VideoCodec {
     kAV1,
 };
 
+/// Audio codec identifiers.
+enum class AudioCodec {
+    kOpus,
+    kAAC,
+};
+
+/// Audio sample formats.
+enum class AudioSampleFormat {
+    kFloat32,
+    kInt16,
+};
+
 /// Encoder rate control modes.
 enum class RateControlMode {
     kCBR,   // Constant bitrate
@@ -87,6 +99,44 @@ struct DecodedFrame {
     uint32_t height = 0;
     PixelFormat format = PixelFormat::kNV12;
     uint64_t frame_index = 0;
+};
+
+/// Describes an audio stream's format.
+struct AudioFormat {
+    uint32_t sample_rate = 48000;
+    uint32_t channels = 2;
+    AudioSampleFormat sample_format = AudioSampleFormat::kFloat32;
+};
+
+/// A raw audio frame (PCM samples on CPU).
+struct AudioFrame {
+    const float* data = nullptr;   // Interleaved float32 PCM samples
+    uint32_t frame_count = 0;      // Number of samples per channel
+    uint32_t channels = 2;
+    Timestamp timestamp_us = 0;    // Capture time (µs since epoch)
+    bool silent = false;           // True if the buffer contains silence
+};
+
+/// Configuration for audio encoding.
+struct AudioEncoderConfig {
+    AudioCodec codec = AudioCodec::kOpus;
+    uint32_t sample_rate = 48000;
+    uint32_t channels = 2;
+    uint32_t bitrate_bps = 128000;
+};
+
+/// Configuration for audio decoding.
+struct AudioDecoderConfig {
+    AudioCodec codec = AudioCodec::kOpus;
+    uint32_t sample_rate = 48000;
+    uint32_t channels = 2;
+};
+
+/// An encoded audio packet (compressed data on CPU).
+struct EncodedAudioPacket {
+    std::vector<uint8_t> data;
+    Timestamp timestamp_us = 0;
+    uint32_t duration_us = 0;
 };
 
 }  // namespace lumen

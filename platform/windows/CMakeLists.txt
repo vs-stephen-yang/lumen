@@ -4,6 +4,7 @@
 add_library(lumen_platform_windows STATIC
     common/d3d11_device_context.cpp
     capture/dxgi_desktop_duplication.cpp
+    capture/wasapi_loopback_capture.cpp
     codec/d3d11_color_converter.cpp
     codec/mf_video_encoder.cpp
     codec/mf_video_decoder.cpp
@@ -24,4 +25,6 @@ target_link_libraries(lumen_platform_windows PUBLIC
     mfplat
     mfuuid
     mf
+    ole32
+    avrt
 )
