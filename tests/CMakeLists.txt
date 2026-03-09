@@ -55,4 +55,17 @@ if(WIN32)
     target_link_libraries(audio_capture_encode_test PRIVATE
         lumen_platform_windows
     )
+
+    add_executable(audio_roundtrip_test
+        audio_roundtrip_test.cpp
+    )
+    target_include_directories(audio_roundtrip_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/mocks
+        ${CMAKE_SOURCE_DIR}/platform/windows
+        ${CMAKE_SOURCE_DIR}/src/codec
+    )
+    target_link_libraries(audio_roundtrip_test PRIVATE
+        lumen_platform_windows
+    )
 endif()

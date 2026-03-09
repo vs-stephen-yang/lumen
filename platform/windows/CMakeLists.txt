@@ -9,6 +9,7 @@ add_library(lumen_platform_windows STATIC
     codec/mf_video_encoder.cpp
     codec/mf_video_decoder.cpp
     renderer/d3d11_swapchain_renderer.cpp
+    renderer/wasapi_audio_renderer.cpp
 )
 
 target_include_directories(lumen_platform_windows PUBLIC

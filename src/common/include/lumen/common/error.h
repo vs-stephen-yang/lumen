@@ -25,6 +25,7 @@ enum class ErrorCode {
     kAudioCaptureError,
     kAudioEncoderError,
     kAudioDecoderError,
+    kAudioRendererError,
 };
 
 /// Lightweight error type carrying a code and optional message.

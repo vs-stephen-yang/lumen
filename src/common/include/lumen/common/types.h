@@ -139,4 +139,21 @@ struct EncodedAudioPacket {
     uint32_t duration_us = 0;
 };
 
+/// Configuration for audio rendering/playback.
+struct AudioRendererConfig {
+    uint32_t sample_rate = 48000;
+    uint32_t channels = 2;
+    uint32_t pre_buffer_ms = 40;        // Pre-buffer before playback starts
+    uint32_t buffer_capacity_ms = 100;  // Total ring buffer capacity
+};
+
+/// Runtime statistics for audio rendering.
+struct AudioRendererStats {
+    uint64_t frames_played = 0;
+    uint64_t underrun_count = 0;
+    uint64_t overrun_count = 0;
+    uint64_t total_underrun_samples = 0;
+    double buffer_level_ms = 0.0;
+};
+
 }  // namespace lumen
