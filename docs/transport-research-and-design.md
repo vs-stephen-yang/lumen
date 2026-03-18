@@ -9,7 +9,7 @@ This document covers the transport layer design for Lumen — a cross-platform, 
 | Requirement | Detail |
 |---|---|
 | **Connectivity** | Peer-to-peer (direct) with relay (TURN) fallback |
-| **Protocol backends** | TCP (fully reliable), QUIC streams (reliable), QUIC datagrams (partially reliable), WebTransport |
+| **Protocol backends** | TCP (fully reliable), hybrid TCP+UDP, QUIC streams + datagrams, WebTransport |
 | **Swappable** | Abstract C++ interface; backends selected at runtime |
 | **Cross-platform** | Windows, macOS, iOS, Android |
 | **Framing** | RTP-like media packet headers over the transport |
@@ -40,7 +40,7 @@ struct EncodedAudioPacket {
 
 | Library | Language | License | Windows | macOS | iOS | Android | QUIC Datagrams | WebTransport | Build System | Dependency Weight |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **msquic** | C | MIT | First-class | Supported | Experimental | Experimental (Linux-based) | Yes | No (needs HTTP/3 layer) | CMake | Light (Schannel/OpenSSL) |
+| **msquic** | C | MIT | First-class | Supported | Experimental | Experimental (NDK, uses POSIX/epoll) | Yes | No (needs HTTP/3 layer) | CMake | Light (Schannel/OpenSSL) |
 | **ngtcp2** | C | MIT | Yes | Yes | Yes (portable C) | Yes (portable C) | Yes | No (needs nghttp3) | CMake | Minimal (BYO TLS) |
 | **quiche** | Rust + C FFI | BSD-2 | Yes | Yes | Yes | Yes | Yes | Yes (via HTTP/3) | Cargo + CMake | Medium (Rust toolchain, BoringSSL bundled) |
 | **lsquic** | C | MIT | Yes | Yes | Unclear | Unclear | Yes | Partial | CMake | Medium (BoringSSL) |
@@ -194,13 +194,49 @@ The IETF Media over QUIC (MoQ) working group is standardizing real-time media de
 
 **Relevance to Lumen**: MoQ's architecture (QUIC streams for reliable data, datagrams for latency-sensitive media, independent streams to avoid HoL blocking) validates Lumen's proposed channel design. However, MoQ is a pub/sub distribution protocol — Lumen's 1:1 screen sharing use case is simpler and doesn't need the full MoQ relay infrastructure. The framing ideas and reliability patterns are directly applicable.
 
+### RoQ (RTP over QUIC) — Peer-to-Peer RTP on QUIC
+
+The IETF avtcore working group has drafted a mapping of RTP/RTCP onto QUIC (`draft-ietf-avtcore-rtp-over-quic-14`). Where MoQ targets scalable pub/sub distribution, RoQ targets peer-to-peer media sessions — closer to Lumen's use case.
+
+**How it works:** RTP packets are carried in QUIC datagrams (unreliable, low-latency) or QUIC streams (reliable), multiplexed via flow identifiers. RTCP is partially redundant since QUIC natively provides RTT, loss, and congestion feedback.
+
+**Status:** The draft expired in 2025 with no RFC published. Spec development appears stalled. Implementations are limited: a Go reference implementation, an alpha-quality C implementation via imquic, and an experimental GStreamer plugin. No production C/C++ library exists.
+
+**Pros:**
+- Standardized framing for RTP over QUIC
+- Reuses the RTP ecosystem: payload formats, SDP signaling, RTCP feedback (PLI, FIR, NACK)
+- Dual-mode transport (datagrams for real-time, streams for reliable) validates Lumen's channel design
+- Potential future interop with other RTP-over-QUIC stacks
+
+**Cons:**
+- RTP header overhead (~12 bytes/packet) is unnecessary for a 1:1 pipeline that controls both endpoints
+- RTCP complexity carries forward even though QUIC provides equivalent feedback natively
+- No production C/C++ library to integrate
+- Stalled spec is risky to build on — may never reach RFC
+
+**Relevance to Lumen:** RoQ's value proposition is interoperability with other RTP-based systems. Lumen controls both endpoints and doesn't need this interop. The custom `MediaPacketHeader` framing is simpler (no RTCP state machines) and lower overhead (28 bytes vs. 12+ for RTP + QUIC framing overhead). If WebRTC interop becomes a future requirement, RoQ or an `RtpFramer` adapter would be the path — the abstract interface makes this a backend swap, not an architectural change.
+
 ### Key Takeaway
 
-The industry is moving from WebRTC's DTLS-SRTP toward QUIC-based media transport. Lumen's design aligns with this trajectory: QUIC streams for reliable data (signaling, keyframes), QUIC datagrams for latency-sensitive media (delta frames, audio), and built-in congestion feedback for adaptive bitrate.
+The industry is moving from WebRTC's DTLS-SRTP toward QUIC-based media transport. Lumen's design aligns with this trajectory: QUIC streams for reliable data (signaling, keyframes), QUIC datagrams for latency-sensitive media (delta frames, audio), and built-in congestion feedback for adaptive bitrate. Both MoQ (pub/sub) and RoQ (peer-to-peer) validate the core pattern of mapping media onto QUIC streams and datagrams, while Lumen's custom framing avoids the complexity overhead of either standard.
 
 ---
 
 ## 4. Abstract Interface Design
+
+### Threading Model
+
+All transport interfaces follow these threading rules:
+
+- **`Send()` is thread-safe** — may be called from any thread (encoder callback, application thread). Implementations must synchronize internally.
+- **Receive callbacks fire on the transport's I/O thread** — not the caller's thread. Receivers must hand off to their own thread if doing heavy work (e.g., decoding). Do not block in callbacks.
+- **State and stats callbacks fire on the transport's I/O thread** — same rule as receive callbacks.
+- **`Initialize()`, `Connect()`, `Shutdown()`** are not thread-safe — call from a single owner thread (typically the application's main/control thread).
+- **Backends own their I/O thread(s)** — TCP backend runs a single I/O thread with a send queue; QUIC backends may use the library's internal threading (msquic manages its own thread pool, ngtcp2 requires caller-managed event loop).
+
+### Error Handling
+
+All interfaces return `Result<T>`, which is an alias for `std::expected<T, Error>` (C++23). The `Error` type is defined in `src/common/include/lumen/common/error.h`. On compilers without C++23 `<expected>`, a polyfill (e.g., `tl::expected`) is used. This keeps error handling consistent with the rest of the codebase — no exceptions across module boundaries.
 
 ### 4.1 Transport Types
 
@@ -210,12 +246,22 @@ The industry is moving from WebRTC's DTLS-SRTP toward QUIC-based media transport
 namespace lumen {
 
 /// Identifies what kind of data a channel carries.
+///
+/// One channel per media type. The reliability mode of each channel is
+/// determined by the backend — not by the caller. For example:
+///   - TCP backend: all channels are reliable (inherent)
+///   - QUIC backend: kVideo maps to a QUIC stream (reliable, ordered),
+///     kAudio maps to QUIC datagrams (unreliable, lowest latency)
+///   - Advanced QUIC backends may internally route keyframes to a stream
+///     and delta frames to datagrams, but this is hidden from callers.
+///
+/// Audio uses unreliable delivery by default (QUIC datagrams). At 20ms
+/// Opus frames, a single lost packet causes a 20ms gap that PLC (packet
+/// loss concealment) handles well.
 enum class ChannelType {
-    kVideoReliable,       // Keyframes, codec config (QUIC stream)
-    kVideoUnreliable,     // Delta frames — droppable (QUIC datagram)
-    kAudioReliable,       // Audio frames, reliable delivery (QUIC stream)
-    kAudioUnreliable,     // Audio frames, low-latency (QUIC datagram)
-    kControl,             // Signaling, stats, keyframe requests (QUIC stream)
+    kVideo,        // All video frames (keyframes + delta frames)
+    kAudio,        // Audio frames (unreliable by default)
+    kControl,      // Signaling, stats, keyframe requests
 };
 
 /// Reliability mode for a channel.
@@ -227,12 +273,15 @@ enum class ReliabilityMode {
 };
 
 /// Priority levels for send scheduling.
+/// Used by the send queue to order outgoing data when the path is congested.
+/// Keyframes and delta frames share the kVideo channel but may be assigned
+/// different priorities internally by the backend.
 enum class SendPriority {
-    kControl = 0,      // Highest
-    kAudio = 1,
-    kVideoKey = 2,
-    kVideoDelta = 3,
-    kBulk = 4,         // Lowest
+    kControl = 0,      // Highest — signaling, keyframe requests
+    kAudio = 1,        // Audio frames
+    kVideoKey = 2,     // Keyframes (higher priority within kVideo)
+    kVideoDelta = 3,   // Delta frames
+    kBulk = 4,         // Lowest — file transfer, thumbnails
 };
 
 /// Transport-level configuration.
@@ -293,22 +342,33 @@ struct TransportStats {
 };
 
 /// RTP-like media packet header (simplified for 1:1 screen sharing).
+///
+/// Wire layout (28 bytes, all fields network byte order):
+///   [ version:1 | payload_type:1 | sequence_number:2 |
+///     timestamp_us:8 | ssrc:4 |
+///     fragment_index:2 | fragment_count:2 | frame_index:4 |
+///     flags:4 ]
+///
+/// Full 64-bit timestamp avoids wraparound issues (a 32-bit microsecond
+/// counter wraps every ~71 minutes, which is too short for long sessions).
 struct MediaPacketHeader {
     uint8_t version = 1;
-    uint8_t payload_type;            // Maps to ChannelType
+    uint8_t payload_type = 0;        // Maps to ChannelType
     uint16_t sequence_number = 0;
-    uint32_t timestamp_us_low32 = 0; // Low 32 bits of capture timestamp
-    uint32_t ssrc = 0;              // Stream identifier
+    uint64_t timestamp_us = 0;       // Capture timestamp (full 64-bit)
+    uint32_t ssrc = 0;               // Stream identifier
 
     // Fragmentation (for large keyframes)
     uint16_t fragment_index = 0;
     uint16_t fragment_count = 1;
     uint32_t frame_index = 0;
 
-    bool is_keyframe = false;
-    bool is_last_fragment = false;
+    // Packed into a 4-byte flags field on the wire
+    bool is_keyframe = false;        // bit 0 of flags
+    bool is_last_fragment = false;   // bit 1 of flags
+    // bits 2–31 reserved
 
-    static constexpr size_t kSerializedSize = 24;
+    static constexpr size_t kSerializedSize = 28;
 
     void Serialize(uint8_t* buf) const;
     static MediaPacketHeader Deserialize(const uint8_t* buf);
@@ -328,6 +388,15 @@ using StatsCallback = std::function<void(const TransportStats&)>;
 
 namespace lumen {
 
+/// Metadata passed to TransportChannel::Send(). Self-contained within the
+/// transport module — callers map from encoder FrameMetadata to this struct
+/// at the pipeline boundary.
+struct SendOptions {
+    uint64_t timestamp_us = 0;       // Capture timestamp for A/V sync
+    uint32_t frame_index = 0;        // Frame sequence number
+    bool is_keyframe = false;        // Hint for backends that route keyframes differently
+};
+
 /// A logical channel within a connection.
 /// Maps to a QUIC stream (reliable) or datagram flow (unreliable).
 class TransportChannel {
@@ -336,10 +405,19 @@ public:
 
     /// Send data. Large payloads are automatically fragmented.
     virtual Result<void> Send(const uint8_t* data, size_t size,
-                               const FrameMetadata& metadata) = 0;
+                               const SendOptions& options) = 0;
 
     /// Set callback for received (reassembled) frames.
     virtual void SetReceiveCallback(DataReceivedCallback callback) = 0;
+
+    /// Check if the channel can accept more data without unbounded queueing.
+    /// Returns the number of bytes that can be sent immediately. Returns 0
+    /// when the send queue is full or the path is congested.
+    virtual size_t GetSendCapacity() const = 0;
+
+    /// Set callback invoked when send capacity becomes available after
+    /// previously returning 0. Fires on the transport I/O thread.
+    virtual void SetReadyToSendCallback(std::function<void()> callback) = 0;
 
     virtual ChannelType GetType() const = 0;
     virtual ReliabilityMode GetReliability() const = 0;
@@ -393,11 +471,26 @@ public:
 
 namespace lumen {
 
+/// Reconnection policy for automatic recovery after connection loss.
+struct ReconnectPolicy {
+    bool auto_reconnect = true;
+    uint32_t max_attempts = 5;
+    uint32_t initial_backoff_ms = 500;   // Doubles each attempt
+    uint32_t max_backoff_ms = 10000;
+};
+
 class TransportClient {
 public:
     virtual ~TransportClient() = default;
     virtual Result<void> Initialize(const TransportConfig& config) = 0;
     virtual Result<std::unique_ptr<TransportConnection>> Connect() = 0;
+
+    /// Set reconnection policy. When enabled, the client automatically
+    /// re-establishes the connection on failure with exponential backoff.
+    /// The ConnectionStateCallback sequence during reconnection is:
+    ///   kFailed → kConnecting → kConnected (or kFailed after max_attempts).
+    virtual void SetReconnectPolicy(const ReconnectPolicy& policy) = 0;
+
     virtual void Shutdown() = 0;
 };
 
@@ -440,21 +533,23 @@ Full RTP (RFC 3550) with RTCP was designed to multiplex many participants over b
 
 For a 1:1 screen sharing pipeline over QUIC, most of RTP's machinery is redundant.
 
+**RoQ (RTP over QUIC)** is the emerging standard for carrying RTP over QUIC (`draft-ietf-avtcore-rtp-over-quic`), but it inherits this same overhead. RoQ's value is interoperability with other RTP stacks — Lumen controls both endpoints and doesn't need it. Custom framing gives us lower per-packet overhead and avoids RTCP state machine complexity. See Section 3 for full RoQ evaluation.
+
 ### Lumen's Approach: MediaPacketHeader
 
-A simplified 24-byte header carrying only what's needed:
+A simplified 28-byte header carrying only what's needed:
 
 | Field | Size | Purpose |
 |---|---|---|
 | `version` | 1B | Protocol version |
 | `payload_type` | 1B | Channel/codec identifier |
 | `sequence_number` | 2B | Per-channel loss detection |
-| `timestamp_us_low32` | 4B | A/V sync, jitter buffer playout |
+| `timestamp_us` | 8B | Full 64-bit capture timestamp — A/V sync, jitter buffer playout (no wraparound) |
 | `ssrc` | 4B | Stream identifier |
 | `fragment_index` | 2B | Fragment position in frame |
 | `fragment_count` | 2B | Total fragments for frame |
 | `frame_index` | 4B | Frame sequence number |
-| `flags` | 4B | `is_keyframe`, `is_last_fragment`, reserved |
+| `flags` | 4B | `is_keyframe` (bit 0), `is_last_fragment` (bit 1), bits 2–31 reserved |
 
 ### Fragmentation
 
@@ -463,8 +558,9 @@ Large frames (especially keyframes at 100KB–3MB) must be fragmented into MTU-s
 - A 500KB keyframe → ~420 fragments
 - `FrameFragmenter` splits frame + header into MTU-sized packets
 - `FrameReassembler` collects fragments and delivers complete frames
-- **Keyframes are sent on reliable QUIC streams** (all fragments guaranteed to arrive)
-- **Delta frames are sent as QUIC datagrams** (fragments may be lost; incomplete frames are discarded)
+- All video fragments are sent through the single `kVideo` channel
+- The backend determines reliability: QUIC stream (reliable, ordered) by default; advanced backends may internally route delta fragments to datagrams
+- Incomplete frames (from datagram loss in advanced backends) are discarded by the reassembler
 
 ### Future RTP Interop
 
@@ -484,7 +580,7 @@ If interoperability with WebRTC or other RTP-based systems is needed, a `RtpFram
 3. **Connectivity checks** — try each candidate pair; first successful QUIC handshake wins
 4. **TURN fallback** — if all direct paths fail, relay through TURN server
 
-**Recommendation:** Use the `juice` library (BSD license, lightweight ICE in C) rather than implementing ICE from scratch. It handles STUN/TURN/candidate gathering and integrates cleanly with C++ projects.
+**Recommendation:** Use the `libjuice` library (MPL-2.0, lightweight ICE in C) rather than implementing ICE from scratch. It handles STUN/TURN/candidate gathering and integrates cleanly with C++ projects. **License note:** MPL-2.0 is file-level copyleft — modifications to libjuice source files must remain MPL-2.0, but it can be combined with proprietary code in the same project without affecting Lumen's license. Static linking is permitted. This is compatible with all target platforms including iOS.
 
 **Risk:** ICE adds 1–3 seconds to connection setup. Mitigate with TURN pre-allocation for fastest fallback.
 
@@ -493,7 +589,7 @@ If interoperability with WebRTC or other RTP-based systems is needed, a `RtpFram
 **Challenge:** A 4K HEVC keyframe can reach 1–3MB. Bursting this data causes congestion spikes and packet loss.
 
 **Mitigation strategy:**
-- Send keyframes on a **reliable QUIC stream** (guaranteed delivery, paced by congestion control)
+- Keyframes flow through the `kVideo` channel — on QUIC backends, this maps to a stream with guaranteed delivery, paced by congestion control
 - Use the encoder's **intra refresh** mode to spread keyframe data across multiple frames
 - Set `max_slice_size_bytes` on the encoder to produce smaller NAL units
 - Transport-level **pacing**: spread fragments across the congestion window, don't burst
@@ -503,22 +599,25 @@ If interoperability with WebRTC or other RTP-based systems is needed, a `RtpFram
 **Challenge:** TCP has a single byte stream — one lost packet blocks everything.
 
 **How QUIC solves it:**
-- `kVideoReliable` = one QUIC stream (keyframes don't block audio)
-- `kVideoUnreliable` = QUIC datagrams (no blocking at all)
-- `kAudioReliable` = separate QUIC stream (independent of video retransmissions)
+- `kVideo` = one QUIC stream — video frames may block each other (acceptable since they're sequential), but video does not block audio
+- `kAudio` = QUIC datagrams (default — lowest latency, PLC handles gaps)
 - `kControl` = separate QUIC stream
 
+Each channel maps to an independent QUIC stream or datagram flow, so loss in one channel never stalls another.
+
 **For TCP fallback:** Application-level multiplexing with `[channel_id | length | payload]` framing and a priority send queue (audio/control preempt video).
+
+**For hybrid TCP+UDP (see Section 6.9):** Video on TCP (reliable), audio on UDP (low-latency). HoL blocking affects video but not audio.
 
 ### 6.4 Partial Reliability (Stale Frame Dropping)
 
 **Challenge:** A delta frame arriving after the next frame has been rendered is useless. Retransmitting it wastes bandwidth.
 
 **Approach:**
-- Delta frames sent as QUIC datagrams (inherently unreliable)
-- **Staleness deadline**: `capture_time + (1/fps) * 1.5` — unsent fragments are dropped after this
+- **Send-side stale frame dropping**: frames past their deadline (`capture_time_us + (1'000'000 / fps) * 1.5`) are dropped from the send queue before transmission — the sender decides, not the transport reliability mode
 - Receiver-side reassembler discards incomplete frames after 2x frame interval
 - Loss reported to jitter buffer, which signals PLC (audio) or freeze/skip (video)
+- Advanced QUIC backends may optionally send delta frames as datagrams internally for additional partial reliability, but this is a backend optimization hidden behind the `kVideo` channel
 
 ### 6.5 A/V Synchronization
 
@@ -562,6 +661,24 @@ VideoEncoder::SetBitrate() / SetFrameRate()
 - Client verifies server certificate (`TransportConfig::verify_peer`)
 - 0-RTT resumption for fast reconnection (with anti-replay protection)
 
+### 6.9 Hybrid TCP+UDP Transport Mode
+
+**Concept:** Video sent over a single TCP connection (reliable, ordered), audio sent over bare UDP (unreliable, low-latency). This avoids QUIC entirely while still separating audio from video HoL blocking.
+
+**When this makes sense:**
+- Early development / MVP — get end-to-end working before adding QUIC complexity
+- Environments where QUIC is blocked (corporate firewalls, UDP-restricted networks that allow specific UDP ports but block QUIC's handshake)
+- LAN deployments where TCP latency is acceptable (sub-1ms RTT, no congestion)
+
+**Trade-offs:**
+- Video suffers TCP HoL blocking on lossy links — a single lost packet stalls all subsequent frames
+- No partial reliability for video — stale delta frames can't be dropped, they queue up behind retransmissions
+- Audio over bare UDP has no encryption (unless layered with DTLS) and no congestion control
+- Two separate connections to manage (TCP + UDP), complicating NAT traversal (need hole-punching for UDP separately)
+- No congestion feedback from TCP that's useful for adaptive bitrate — TCP's internal congestion control is opaque to the application
+
+**Interface impact:** None — this is just another backend behind `TransportClient`/`TransportServer`. The TCP+UDP backend maps `kVideo` and `kControl` channels to the TCP socket and `kAudio` to a UDP socket. The abstract interfaces remain unchanged.
+
 ---
 
 ## 7. Phased Implementation Plan
@@ -603,6 +720,8 @@ tests/
 
 TCP multiplexing: `[channel_id: u8][length: u32][payload]` with priority send queue.
 
+**Variant — Hybrid TCP+UDP:** As part of Phase 1, optionally add a UDP socket for audio alongside the TCP connection. This gives audio low-latency delivery without QUIC. Minimal additional complexity (one UDP socket + send/recv). See Section 6.9.
+
 ### Phase 2: QUIC Backend (msquic on Windows)
 
 **Goal:** Replace HoL-blocking TCP with QUIC streams + datagrams.
@@ -613,8 +732,7 @@ platform/windows/transport/
     quic_transport_client.h / .cpp
     quic_transport_server.h / .cpp
     quic_transport_connection.h / .cpp
-    quic_stream_channel.h / .cpp
-    quic_datagram_channel.h / .cpp
+    quic_channel.h / .cpp            // Handles both stream and datagram modes
 
 tests/
     transport_quic_test.cpp
@@ -627,6 +745,8 @@ tests/
 ### Phase 3: Jitter Buffer
 
 **Goal:** Smooth playback timing on the receive side.
+
+**Parallelism note:** The jitter buffer is a separate module (`src/jitter_buffer/`), not part of the transport. It depends on the transport's receive callback but can be developed and tested in parallel with Phase 2 using mock transport channels.
 
 **Files to create:**
 ```
@@ -669,7 +789,7 @@ src/transport/
     src/stun_client.h / .cpp
 ```
 
-Consider integrating `juice` (LGPL-2.1/MIT dual-license, lightweight ICE library in C).
+Consider integrating `libjuice` (MPL-2.0, lightweight ICE library in C). MPL-2.0 permits static linking and combining with proprietary code — see Section 6.1 license note.
 
 ### Phase 6: Cross-Platform QUIC (ngtcp2)
 
@@ -720,10 +840,9 @@ src/jitter_buffer/
         audio_jitter_buffer.cpp
 
 platform/windows/transport/
-    tcp_transport_*.h/.cpp          // TCP fallback
+    tcp_transport_*.h/.cpp          // TCP fallback (+ optional UDP for audio)
     quic_transport_*.h/.cpp         // msquic backend
-    quic_stream_channel.h/.cpp
-    quic_datagram_channel.h/.cpp
+    quic_channel.h/.cpp             // Stream + datagram modes
 
 platform/{macos,ios,android}/transport/
     quic_transport_*.h/.cpp         // ngtcp2 backend
@@ -743,3 +862,5 @@ platform/{macos,ios,android}/transport/
 - [MOQ Protocol Explained — WebRTC.ventures](https://webrtc.ventures/2025/10/moq-protocol-explained-unifying-real-time-and-scalable-streaming/)
 - [HTTP/3 Open Source Support Analysis](https://httptoolkit.com/blog/http3-quic-open-source-support-nowhere/)
 - [MsQuic for Game Development — Microsoft](https://learn.microsoft.com/en-us/gaming/gdk/docs/features/console/networking/game-mesh/msquic-intro-networking)
+- [RTP over QUIC Draft (draft-ietf-avtcore-rtp-over-quic)](https://datatracker.ietf.org/doc/draft-ietf-avtcore-rtp-over-quic/)
+- [imquic — C library for QUIC with RoQ support](https://github.com/meetecho/imquic)
