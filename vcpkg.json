@@ -2,6 +2,7 @@
     "name": "lumen",
     "version-string": "0.1.0",
     "dependencies": [
-        "opus"
+        "opus",
+        "msquic"
     ]
 }

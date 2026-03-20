@@ -26,6 +26,14 @@ enum class ErrorCode {
     kAudioEncoderError,
     kAudioDecoderError,
     kAudioRendererError,
+    kTransportError,
+    kTransportNotConnected,
+    kTransportConnectionFailed,
+    kTransportTimeout,
+    kTransportAddressInvalid,
+    kTransportChannelFull,
+    kTransportFragmentError,
+    kTransportTlsError,
 };
 
 /// Lightweight error type carrying a code and optional message.

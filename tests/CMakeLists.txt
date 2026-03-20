@@ -1,4 +1,29 @@
+# Cross-platform transport unit tests.
+add_executable(transport_unit_test
+    transport_unit_test.cpp
+)
+target_include_directories(transport_unit_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/mocks
+)
+target_link_libraries(transport_unit_test PRIVATE
+    lumen_transport
+)
+
 if(WIN32)
+    # TCP transport integration test (Windows, Winsock2).
+    add_executable(transport_tcp_test
+        transport_tcp_test.cpp
+    )
+    target_include_directories(transport_tcp_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/mocks
+        ${CMAKE_SOURCE_DIR}/platform/windows
+    )
+    target_link_libraries(transport_tcp_test PRIVATE
+        lumen_platform_windows
+    )
+
     add_executable(capture_encode_test
         capture_encode_test.cpp
     )
@@ -68,4 +93,20 @@ if(WIN32)
     target_link_libraries(audio_roundtrip_test PRIVATE
         lumen_platform_windows
     )
+
+    # QUIC transport integration test (requires msquic).
+    if(LUMEN_HAS_QUIC)
+        add_executable(transport_quic_test
+            transport_quic_test.cpp
+        )
+        target_include_directories(transport_quic_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/mocks
+            ${CMAKE_SOURCE_DIR}/platform/windows
+        )
+        target_link_libraries(transport_quic_test PRIVATE
+            lumen_platform_windows
+            crypt32
+        )
+    endif()
 endif()
