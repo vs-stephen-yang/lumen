@@ -14,6 +14,11 @@ set(LUMEN_PLATFORM_WIN_SOURCES
     transport/tcp_transport_connection.cpp
     transport/tcp_transport_client.cpp
     transport/tcp_transport_server.cpp
+    transport/ws_frame_codec.cpp
+    transport/ws_handshake.cpp
+    transport/ws_transport_channel.cpp
+    transport/ws_transport_connection.cpp
+    transport/ws_transport_server.cpp
 )
 
 # QUIC transport (requires msquic).
@@ -52,6 +57,7 @@ target_link_libraries(lumen_platform_windows PUBLIC
     ole32
     avrt
     ws2_32
+    bcrypt
 )
 
 if(LUMEN_HAS_QUIC)
