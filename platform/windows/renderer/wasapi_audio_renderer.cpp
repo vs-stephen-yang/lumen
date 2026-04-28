@@ -80,11 +80,8 @@ WasapiAudioRenderer::~WasapiAudioRenderer() {
     }
 
     ReleaseDevice();
+    enumerator_.Reset();
 
-    if (enumerator_) {
-        enumerator_->Release();
-        enumerator_ = nullptr;
-    }
     if (wasapi_event_) {
         CloseHandle(wasapi_event_);
         wasapi_event_ = nullptr;
@@ -131,8 +128,7 @@ Result<void> WasapiAudioRenderer::Initialize(
 
     // Create device enumerator
     hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                          __uuidof(IMMDeviceEnumerator),
-                          reinterpret_cast<void**>(&enumerator_));
+                          IID_PPV_ARGS(&enumerator_));
     if (FAILED(hr)) {
         return Error::Make(ErrorCode::kAudioRendererError,
                            "Failed to create device enumerator");
@@ -153,15 +149,15 @@ Result<void> WasapiAudioRenderer::InitializeDevice() {
     ReleaseDevice();
 
     // Get default render endpoint
-    HRESULT hr =
-        enumerator_->GetDefaultAudioEndpoint(eRender, eConsole, &device_);
+    HRESULT hr = enumerator_->GetDefaultAudioEndpoint(
+        eRender, eConsole, device_.GetAddressOf());
     if (FAILED(hr)) {
         return Error::Make(ErrorCode::kAudioRendererError,
                            "Failed to get default audio endpoint");
     }
 
     hr = device_->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
-                            reinterpret_cast<void**>(&audio_client_));
+                            reinterpret_cast<void**>(audio_client_.GetAddressOf()));
     if (FAILED(hr)) {
         return Error::Make(ErrorCode::kAudioRendererError,
                            "Failed to activate audio client");
@@ -212,8 +208,9 @@ Result<void> WasapiAudioRenderer::InitializeDevice() {
     }
 
     // Get the render client
-    hr = audio_client_->GetService(__uuidof(IAudioRenderClient),
-                                    reinterpret_cast<void**>(&render_client_));
+    hr = audio_client_->GetService(
+        __uuidof(IAudioRenderClient),
+        reinterpret_cast<void**>(render_client_.GetAddressOf()));
     if (FAILED(hr)) {
         return Error::Make(ErrorCode::kAudioRendererError,
                            "Failed to get render client service");
@@ -224,18 +221,9 @@ Result<void> WasapiAudioRenderer::InitializeDevice() {
 }
 
 void WasapiAudioRenderer::ReleaseDevice() {
-    if (render_client_) {
-        render_client_->Release();
-        render_client_ = nullptr;
-    }
-    if (audio_client_) {
-        audio_client_->Release();
-        audio_client_ = nullptr;
-    }
-    if (device_) {
-        device_->Release();
-        device_ = nullptr;
-    }
+    render_client_.Reset();
+    audio_client_.Reset();
+    device_.Reset();
 }
 
 Result<void> WasapiAudioRenderer::Start() {

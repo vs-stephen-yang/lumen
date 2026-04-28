@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lumen/renderer/audio_renderer.h"
+#include "lumen/common/com_ptr.h"
 #include "audio_ring_buffer.h"
 
 #include <Audioclient.h>
@@ -40,10 +41,10 @@ private:
     std::unique_ptr<AudioRingBuffer> ring_buffer_;
 
     // WASAPI COM objects
-    IAudioClient* audio_client_ = nullptr;
-    IAudioRenderClient* render_client_ = nullptr;
-    IMMDevice* device_ = nullptr;
-    IMMDeviceEnumerator* enumerator_ = nullptr;
+    ComPtr<IAudioClient> audio_client_;
+    ComPtr<IAudioRenderClient> render_client_;
+    ComPtr<IMMDevice> device_;
+    ComPtr<IMMDeviceEnumerator> enumerator_;
     DeviceNotificationClient* notification_client_ = nullptr;
 
     UINT32 buffer_frame_count_ = 0;  // WASAPI endpoint buffer size in frames

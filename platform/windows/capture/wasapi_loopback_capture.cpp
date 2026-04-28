@@ -91,22 +91,12 @@ WasapiLoopbackCapture::~WasapiLoopbackCapture() {
         CoTaskMemFree(mix_format_);
         mix_format_ = nullptr;
     }
-    if (capture_client_) {
-        capture_client_->Release();
-        capture_client_ = nullptr;
-    }
-    if (audio_client_) {
-        audio_client_->Release();
-        audio_client_ = nullptr;
-    }
-    if (device_) {
-        device_->Release();
-        device_ = nullptr;
-    }
-    if (enumerator_) {
-        enumerator_->Release();
-        enumerator_ = nullptr;
-    }
+
+    capture_client_.Reset();
+    audio_client_.Reset();
+    device_.Reset();
+    enumerator_.Reset();
+
     if (stop_event_) {
         CloseHandle(stop_event_);
         stop_event_ = nullptr;
@@ -132,9 +122,8 @@ Result<void> WasapiLoopbackCapture::Initialize() {
     }
 
     // Create device enumerator
-    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
-                          CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
-                          reinterpret_cast<void**>(&enumerator_));
+    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                          IID_PPV_ARGS(&enumerator_));
     if (FAILED(hr)) {
         return Error::Make(ErrorCode::kAudioCaptureError,
                            "Failed to create device enumerator");
@@ -153,33 +142,24 @@ Result<void> WasapiLoopbackCapture::Initialize() {
 
 Result<void> WasapiLoopbackCapture::InitializeDevice() {
     // Release previous resources if re-initializing
-    if (capture_client_) {
-        capture_client_->Release();
-        capture_client_ = nullptr;
-    }
-    if (audio_client_) {
-        audio_client_->Release();
-        audio_client_ = nullptr;
-    }
-    if (device_) {
-        device_->Release();
-        device_ = nullptr;
-    }
+    capture_client_.Reset();
+    audio_client_.Reset();
+    device_.Reset();
     if (mix_format_) {
         CoTaskMemFree(mix_format_);
         mix_format_ = nullptr;
     }
 
     // Get default render endpoint (eRender for loopback, NOT eCapture)
-    HRESULT hr = enumerator_->GetDefaultAudioEndpoint(eRender, eConsole,
-                                                       &device_);
+    HRESULT hr = enumerator_->GetDefaultAudioEndpoint(
+        eRender, eConsole, device_.GetAddressOf());
     if (FAILED(hr)) {
         return Error::Make(ErrorCode::kAudioCaptureError,
                            "Failed to get default audio endpoint");
     }
 
     hr = device_->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
-                            reinterpret_cast<void**>(&audio_client_));
+                            reinterpret_cast<void**>(audio_client_.GetAddressOf()));
     if (FAILED(hr)) {
         return Error::Make(ErrorCode::kAudioCaptureError,
                            "Failed to activate audio client");
@@ -217,8 +197,9 @@ Result<void> WasapiLoopbackCapture::InitializeDevice() {
                            "Failed to initialize audio client for loopback");
     }
 
-    hr = audio_client_->GetService(__uuidof(IAudioCaptureClient),
-                                    reinterpret_cast<void**>(&capture_client_));
+    hr = audio_client_->GetService(
+        __uuidof(IAudioCaptureClient),
+        reinterpret_cast<void**>(capture_client_.GetAddressOf()));
     if (FAILED(hr)) {
         return Error::Make(ErrorCode::kAudioCaptureError,
                            "Failed to get capture client service");

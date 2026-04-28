@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lumen/capture/audio_capture.h"
+#include "lumen/common/com_ptr.h"
 
 #include <Audioclient.h>
 #include <mmdeviceapi.h>
@@ -38,10 +39,10 @@ private:
     // IMMNotificationClient implementation for device hot-plug
     class DeviceNotificationClient;
 
-    IAudioClient* audio_client_ = nullptr;
-    IAudioCaptureClient* capture_client_ = nullptr;
-    IMMDevice* device_ = nullptr;
-    IMMDeviceEnumerator* enumerator_ = nullptr;
+    ComPtr<IAudioClient> audio_client_;
+    ComPtr<IAudioCaptureClient> capture_client_;
+    ComPtr<IMMDevice> device_;
+    ComPtr<IMMDeviceEnumerator> enumerator_;
     DeviceNotificationClient* notification_client_ = nullptr;
 
     WAVEFORMATEX* mix_format_ = nullptr;
