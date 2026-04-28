@@ -159,6 +159,7 @@ Result<void> MfVideoDecoder::FindHardwareDecoder(const GUID& subtype) {
     IMFActivate** activates = nullptr;
     UINT32 count = 0;
 
+    // Try hardware decoders first, fall back to software.
     HRESULT hr = MFTEnumEx(
         MFT_CATEGORY_VIDEO_DECODER,
         MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
@@ -168,8 +169,19 @@ Result<void> MfVideoDecoder::FindHardwareDecoder(const GUID& subtype) {
         &count);
 
     if (FAILED(hr) || count == 0) {
+        // Fall back to software decoders.
+        hr = MFTEnumEx(
+            MFT_CATEGORY_VIDEO_DECODER,
+            MFT_ENUM_FLAG_SORTANDFILTER,
+            &input_type,
+            nullptr,
+            &activates,
+            &count);
+    }
+
+    if (FAILED(hr) || count == 0) {
         return Error::Make(ErrorCode::kUnsupported,
-                           "No hardware video decoder found");
+                           "No video decoder found (hardware or software)");
     }
 
     hr = activates[0]->ActivateObject(IID_PPV_ARGS(&decoder_));

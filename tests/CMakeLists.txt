@@ -94,6 +94,19 @@ if(WIN32)
         lumen_platform_windows
     )
 
+    add_executable(e2e_pipeline_test
+        e2e_pipeline_test.cpp
+    )
+    target_include_directories(e2e_pipeline_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/mocks
+        ${CMAKE_SOURCE_DIR}/platform/windows
+        ${CMAKE_SOURCE_DIR}/src/codec
+    )
+    target_link_libraries(e2e_pipeline_test PRIVATE
+        lumen_platform_windows
+    )
+
     # QUIC transport integration test (requires msquic).
     if(LUMEN_HAS_QUIC)
         add_executable(transport_quic_test
