@@ -10,6 +10,15 @@ target_link_libraries(transport_unit_test PRIVATE
     lumen_transport
 )
 
+# Signaling server integration test.
+add_executable(signaling_server_test
+    signaling_server_test.cpp
+)
+target_link_libraries(signaling_server_test PRIVATE
+    lumen_signaling
+    cpp_httplib
+)
+
 if(WIN32)
     # TCP transport integration test (Windows, Winsock2).
     add_executable(transport_tcp_test
@@ -21,6 +30,18 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/platform/windows
     )
     target_link_libraries(transport_tcp_test PRIVATE
+        lumen_platform_windows
+    )
+
+    # WebSocket transport integration test.
+    add_executable(ws_transport_test
+        ws_transport_test.cpp
+    )
+    target_include_directories(ws_transport_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform/windows
+    )
+    target_link_libraries(ws_transport_test PRIVATE
         lumen_platform_windows
     )
 

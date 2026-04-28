@@ -58,3 +58,5 @@ if(LUMEN_HAS_QUIC)
     target_link_libraries(lumen_platform_windows PUBLIC msquic ntdll)
     target_compile_definitions(lumen_platform_windows PUBLIC LUMEN_HAS_QUIC=1)
 endif()
+
+add_subdirectory(apps/web_receiver)
