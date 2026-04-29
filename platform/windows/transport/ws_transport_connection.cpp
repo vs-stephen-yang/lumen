@@ -38,8 +38,12 @@ Result<void> WsTransportConnection::Start() {
 }
 
 void WsTransportConnection::Close() {
-    if (!running_.exchange(false)) return;
+    // Idempotent. closed_ guards the work; running_ alone is unsafe
+    // because the recv thread may have flipped it on its own (e.g.,
+    // after seeing a kClose opcode), and we still need to join.
+    if (closed_.exchange(true)) return;
 
+    running_.store(false);
     TransitionState(ConnectionState::kDraining);
 
     if (socket_ != INVALID_SOCKET) {
@@ -47,6 +51,7 @@ void WsTransportConnection::Close() {
         closesocket(socket_);
         socket_ = INVALID_SOCKET;
     }
+
     if (recv_thread_.joinable()) recv_thread_.join();
 
     TransitionState(ConnectionState::kDisconnected);

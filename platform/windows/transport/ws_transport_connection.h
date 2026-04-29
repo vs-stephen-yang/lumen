@@ -63,6 +63,7 @@ private:
     std::mutex send_mu_;
     std::thread recv_thread_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> closed_{false};
 
     std::unique_ptr<WsTransportChannel> video_;
     std::unique_ptr<WsTransportChannel> audio_;
