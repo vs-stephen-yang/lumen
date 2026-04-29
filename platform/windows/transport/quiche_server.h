@@ -17,11 +17,13 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 struct quiche_config;
@@ -59,8 +61,22 @@ struct QuicheServerConfig {
     bool enable_h3_extended_connect = true;  // required for WebTransport
 };
 
+/// Information about an established WebTransport session.
+struct WebTransportSessionInfo {
+    /// QUIC connection's primary SCID (string of bytes used as a stable id).
+    std::string conn_id;
+    /// HTTP/3 stream id that hosts the session (the CONNECT stream).
+    uint64_t session_id = 0;
+    /// :authority and :path from the CONNECT request, for routing.
+    std::string authority;
+    std::string path;
+};
+
 class QuicheServer {
 public:
+    using WebTransportSessionCallback =
+        std::function<void(const WebTransportSessionInfo&)>;
+
     QuicheServer();
     ~QuicheServer();
 
@@ -81,6 +97,13 @@ public:
     /// Number of QUIC connections currently tracked.
     size_t GetConnectionCount() const;
 
+    /// Number of currently established WebTransport sessions.
+    size_t GetWebTransportSessionCount() const;
+
+    /// Set a callback fired (on the recv thread) for each WT session
+    /// established via extended CONNECT. The callback must not block.
+    void SetOnWebTransportSession(WebTransportSessionCallback cb);
+
 private:
     struct Connection;
 
@@ -95,6 +118,9 @@ private:
     QuicheServerConfig user_cfg_;
     quiche_config* quiche_cfg_ = nullptr;
     quiche_h3_config* h3_cfg_ = nullptr;
+
+    mutable std::mutex cb_mu_;
+    WebTransportSessionCallback wt_callback_;
 
     SOCKET sock_ = INVALID_SOCKET;
     sockaddr_storage local_addr_ = {};

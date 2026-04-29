@@ -48,11 +48,43 @@ struct QuicheServer::Connection {
     std::chrono::steady_clock::time_point next_timeout =
         (std::chrono::steady_clock::time_point::max)();
 
+    // Established WebTransport session ids (= stream id of the CONNECT
+    // stream). One QUIC connection can host multiple sessions in
+    // principle, though typical apps use one.
+    std::unordered_set<uint64_t> wt_sessions;
+
     ~Connection() {
         if (h3) quiche_h3_conn_free(h3);
         if (qc) quiche_conn_free(qc);
     }
 };
+
+namespace {
+
+// Captures the request pseudo-headers we care about during the
+// quiche_h3_event_for_each_header walk.
+struct RequestHeaders {
+    std::string method;
+    std::string protocol;
+    std::string scheme;
+    std::string authority;
+    std::string path;
+};
+
+int CaptureHeader(uint8_t* name, size_t name_len,
+                   uint8_t* value, size_t value_len, void* arg) {
+    auto* h = static_cast<RequestHeaders*>(arg);
+    std::string n(reinterpret_cast<char*>(name), name_len);
+    std::string v(reinterpret_cast<char*>(value), value_len);
+    if      (n == ":method")    h->method    = std::move(v);
+    else if (n == ":protocol")  h->protocol  = std::move(v);
+    else if (n == ":scheme")    h->scheme    = std::move(v);
+    else if (n == ":authority") h->authority = std::move(v);
+    else if (n == ":path")      h->path      = std::move(v);
+    return 0;
+}
+
+}  // namespace
 
 QuicheServer::QuicheServer() = default;
 
@@ -198,6 +230,18 @@ size_t QuicheServer::GetConnectionCount() const {
     return conns_.size();
 }
 
+size_t QuicheServer::GetWebTransportSessionCount() const {
+    std::lock_guard<std::mutex> lock(conns_mu_);
+    size_t total = 0;
+    for (const auto& [_, c] : conns_) total += c->wt_sessions.size();
+    return total;
+}
+
+void QuicheServer::SetOnWebTransportSession(WebTransportSessionCallback cb) {
+    std::lock_guard<std::mutex> lock(cb_mu_);
+    wt_callback_ = std::move(cb);
+}
+
 void QuicheServer::RecvLoop() {
     std::vector<uint8_t> buf(65535);
 
@@ -317,29 +361,63 @@ void QuicheServer::DriveHttp3(Connection* conn) {
 
         switch (quiche_h3_event_type(ev)) {
             case QUICHE_H3_EVENT_HEADERS: {
-                // Phase 2.2: hardcoded 200 OK reply on every request.
-                // Per-route + extended-CONNECT (WebTransport) handling
-                // lands in Phase 2.3.
-                static const uint8_t kStatus[]   = ":status";
-                static const uint8_t kStatusVal[]= "200";
-                static const uint8_t kServer[]   = "server";
-                static const uint8_t kServerVal[]= "lumen-quiche";
-                static const uint8_t kCl[]       = "content-length";
-                static const uint8_t kClVal[]    = "3";
-                quiche_h3_header headers[] = {
-                    {kStatus,    sizeof(kStatus)    - 1, kStatusVal,
-                                  sizeof(kStatusVal) - 1},
-                    {kServer,    sizeof(kServer)    - 1, kServerVal,
-                                  sizeof(kServerVal) - 1},
-                    {kCl,        sizeof(kCl)        - 1, kClVal,
-                                  sizeof(kClVal)     - 1},
-                };
-                quiche_h3_send_response(conn->h3, conn->qc, s, headers,
-                                          3, false);
-                static const uint8_t kBody[] = "ok\n";
-                quiche_h3_send_body(conn->h3, conn->qc, s,
-                                     const_cast<uint8_t*>(kBody),
-                                     sizeof(kBody) - 1, true);
+                RequestHeaders req;
+                quiche_h3_event_for_each_header(ev, &CaptureHeader, &req);
+
+                const bool is_wt_connect =
+                    req.method == "CONNECT" && req.protocol == "webtransport";
+
+                if (is_wt_connect) {
+                    // RFC 9220 §3.3: respond 200, fin=false. The CONNECT
+                    // stream stays open as the session stream.
+                    static const uint8_t kStatus[]    = ":status";
+                    static const uint8_t kStatusVal[] = "200";
+                    quiche_h3_header headers[] = {
+                        {kStatus,    sizeof(kStatus)    - 1, kStatusVal,
+                                      sizeof(kStatusVal) - 1},
+                    };
+                    quiche_h3_send_response(conn->h3, conn->qc, s, headers,
+                                              1, /*fin=*/false);
+                    conn->wt_sessions.insert(static_cast<uint64_t>(s));
+
+                    WebTransportSessionCallback cb;
+                    {
+                        std::lock_guard<std::mutex> lock(cb_mu_);
+                        cb = wt_callback_;
+                    }
+                    if (cb) {
+                        WebTransportSessionInfo info;
+                        info.conn_id.assign(
+                            reinterpret_cast<const char*>(conn->scid.data()),
+                            conn->scid.size());
+                        info.session_id = static_cast<uint64_t>(s);
+                        info.authority  = std::move(req.authority);
+                        info.path       = std::move(req.path);
+                        cb(info);
+                    }
+                } else {
+                    // Plain HTTP/3 request — Phase 2.2 stub reply.
+                    static const uint8_t kStatus[]    = ":status";
+                    static const uint8_t kStatusVal[] = "200";
+                    static const uint8_t kServer[]    = "server";
+                    static const uint8_t kServerVal[] = "lumen-quiche";
+                    static const uint8_t kCl[]        = "content-length";
+                    static const uint8_t kClVal[]     = "3";
+                    quiche_h3_header headers[] = {
+                        {kStatus,    sizeof(kStatus)    - 1, kStatusVal,
+                                      sizeof(kStatusVal) - 1},
+                        {kServer,    sizeof(kServer)    - 1, kServerVal,
+                                      sizeof(kServerVal) - 1},
+                        {kCl,        sizeof(kCl)        - 1, kClVal,
+                                      sizeof(kClVal)     - 1},
+                    };
+                    quiche_h3_send_response(conn->h3, conn->qc, s, headers,
+                                              3, false);
+                    static const uint8_t kBody[] = "ok\n";
+                    quiche_h3_send_body(conn->h3, conn->qc, s,
+                                         const_cast<uint8_t*>(kBody),
+                                         sizeof(kBody) - 1, true);
+                }
                 break;
             }
             case QUICHE_H3_EVENT_DATA:
