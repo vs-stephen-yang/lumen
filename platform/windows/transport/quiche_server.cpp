@@ -153,6 +153,20 @@ Result<void> QuicheServer::Initialize(const QuicheServerConfig& cfg) {
         }
         quiche_h3_config_enable_extended_connect(
             h3_cfg_, cfg.enable_h3_extended_connect);
+
+        // Advertise SETTINGS_WT_MAX_SESSIONS = 1 so Chrome accepts the
+        // WebTransport session. quiche itself doesn't know about this
+        // setting; we inject it via the additional_settings hook added
+        // in our quiche fork (see third_party/quiche/quiche/src/h3/ffi.rs).
+        if (cfg.enable_h3_extended_connect) {
+            // SETTINGS_WT_MAX_SESSIONS per draft-ietf-webtrans-http3-14
+            // §9.2 IANA registration. Required for Chrome to accept
+            // the WebTransport session.
+            const uint64_t kSettingsWtMaxSessions = 0x14e9cd29ULL;
+            const uint64_t pairs[] = {kSettingsWtMaxSessions, 1ULL};
+            (void)quiche_h3_config_set_additional_settings(
+                h3_cfg_, pairs, sizeof(pairs) / sizeof(pairs[0]));
+        }
     }
 
     return {};

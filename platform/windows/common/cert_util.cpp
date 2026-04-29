@@ -3,7 +3,9 @@
 #include <ncrypt.h>
 #include <bcrypt.h>
 
+#include <cstdio>
 #include <cstring>
+#include <vector>
 
 #pragma comment(lib, "crypt32.lib")
 #pragma comment(lib, "ncrypt.lib")
@@ -63,6 +65,16 @@ SelfSignedCert CreateSelfSignedCert(const std::wstring& key_name,
         NCryptFreeObject(prov);
         return result;
     }
+
+    // Mark the key exportable so ExportPrivKeyPem can dump it as PKCS#8
+    // for quiche/BoringSSL. The default policy is non-exportable; this
+    // MUST run before NCryptFinalizeKey.
+    DWORD export_policy =
+        NCRYPT_ALLOW_EXPORT_FLAG | NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG;
+    NCryptSetProperty(key, NCRYPT_EXPORT_POLICY_PROPERTY,
+                       reinterpret_cast<PBYTE>(&export_policy),
+                       sizeof(export_policy), 0);
+
     if (FAILED(NCryptFinalizeKey(key, 0))) {
         NCryptFreeObject(key);
         NCryptFreeObject(prov);
@@ -206,6 +218,94 @@ std::string Sha256ToHex(const std::array<uint8_t, 32>& hash) {
         out.push_back(kHex[b & 0xF]);
     }
     return out;
+}
+
+namespace {
+
+std::string Base64WithLineBreaks(const uint8_t* data, size_t size) {
+    DWORD pem_len = 0;
+    if (!CryptBinaryToStringA(data, static_cast<DWORD>(size),
+                                CRYPT_STRING_BASE64,
+                                nullptr, &pem_len)) {
+        return {};
+    }
+    std::string out(pem_len, '\0');
+    if (!CryptBinaryToStringA(data, static_cast<DWORD>(size),
+                                CRYPT_STRING_BASE64,
+                                out.data(), &pem_len)) {
+        return {};
+    }
+    out.resize(pem_len);  // strip trailing NUL
+    return out;
+}
+
+}  // namespace
+
+std::string ExportCertPem(const SelfSignedCert& cert) {
+    if (!cert.valid || !cert.context) return {};
+    const std::string body = Base64WithLineBreaks(cert.context->pbCertEncoded,
+                                                    cert.context->cbCertEncoded);
+    if (body.empty()) return {};
+    return std::string("-----BEGIN CERTIFICATE-----\r\n") + body +
+           "-----END CERTIFICATE-----\r\n";
+}
+
+std::string ExportPrivKeyPem(const SelfSignedCert& cert) {
+    if (!cert.valid || cert.key_name.empty()) return {};
+
+    NCRYPT_PROV_HANDLE prov = 0;
+    if (FAILED(NCryptOpenStorageProvider(&prov, MS_KEY_STORAGE_PROVIDER, 0))) {
+        return {};
+    }
+    NCRYPT_KEY_HANDLE key = 0;
+    if (FAILED(NCryptOpenKey(prov, &key, cert.key_name.c_str(), 0, 0))) {
+        NCryptFreeObject(prov);
+        return {};
+    }
+
+    // Need NCRYPT_EXPORTABLE on the key for PKCS8 export. The key created
+    // by CreateSelfSignedCert is exportable by default for ECDSA P-256
+    // via MS_KEY_STORAGE_PROVIDER. If the provider denies, ExportKey
+    // returns NTE_NOT_SUPPORTED.
+    DWORD pkcs8_size = 0;
+    SECURITY_STATUS s = NCryptExportKey(key, 0, NCRYPT_PKCS8_PRIVATE_KEY_BLOB,
+                                          nullptr, nullptr, 0,
+                                          &pkcs8_size, 0);
+    if (s != ERROR_SUCCESS || pkcs8_size == 0) {
+        NCryptFreeObject(key);
+        NCryptFreeObject(prov);
+        return {};
+    }
+    std::vector<BYTE> pkcs8(pkcs8_size);
+    s = NCryptExportKey(key, 0, NCRYPT_PKCS8_PRIVATE_KEY_BLOB,
+                          nullptr, pkcs8.data(), pkcs8_size, &pkcs8_size, 0);
+    NCryptFreeObject(key);
+    NCryptFreeObject(prov);
+    if (s != ERROR_SUCCESS) return {};
+    pkcs8.resize(pkcs8_size);
+
+    const std::string body = Base64WithLineBreaks(pkcs8.data(), pkcs8.size());
+    if (body.empty()) return {};
+    return std::string("-----BEGIN PRIVATE KEY-----\r\n") + body +
+           "-----END PRIVATE KEY-----\r\n";
+}
+
+bool WriteCertAndKeyPemFiles(const SelfSignedCert& cert,
+                              const std::string& cert_path,
+                              const std::string& key_path) {
+    const std::string cert_pem = ExportCertPem(cert);
+    const std::string key_pem  = ExportPrivKeyPem(cert);
+    if (cert_pem.empty() || key_pem.empty()) return false;
+
+    auto write = [](const std::string& path, const std::string& body) {
+        FILE* f = nullptr;
+        fopen_s(&f, path.c_str(), "wb");
+        if (!f) return false;
+        const size_t n = std::fwrite(body.data(), 1, body.size(), f);
+        std::fclose(f);
+        return n == body.size();
+    };
+    return write(cert_path, cert_pem) && write(key_path, key_pem);
 }
 
 }  // namespace lumen

@@ -69,6 +69,17 @@ if(WIN32)
     target_link_libraries(quiche_wt_datagram_smoke_test PRIVATE
         lumen_platform_windows
     )
+
+    # Phase 2.5 — cert_util PEM export verified against quiche.
+    add_executable(cert_util_pem_smoke_test
+        cert_util_pem_smoke_test.cpp
+    )
+    target_include_directories(cert_util_pem_smoke_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/windows
+    )
+    target_link_libraries(cert_util_pem_smoke_test PRIVATE
+        lumen_platform_windows
+    )
 endif()
 
 if(WIN32)

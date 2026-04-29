@@ -11,9 +11,13 @@ struct SessionConfig {
     std::string session_id;
 
     struct Transport {
-        std::string kind = "websocket";
-        std::string url;          // e.g. "ws://localhost:18443/lumen"
+        std::string kind = "webtransport"; // or "websocket"
+        std::string url;          // e.g. "https://localhost:18443/lumen"
         uint32_t ssrc = 0;
+        /// Lowercase hex SHA-256 of the server's DER cert. Required for
+        /// WebTransport (browser pins via serverCertificateHashes).
+        /// Ignored for the websocket kind.
+        std::string cert_sha256;
     } transport;
 
     struct Video {

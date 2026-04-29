@@ -77,6 +77,31 @@ pub extern "C" fn quiche_h3_config_enable_extended_connect(
     config.enable_extended_connect(enabled);
 }
 
+/// Lumen patch: append additional SETTINGS pairs (id, value) to the
+/// outgoing H3 SETTINGS frame. Used to advertise WebTransport-specific
+/// settings (e.g. SETTINGS_WT_MAX_SESSIONS = 0xc671706a) that quiche
+/// itself doesn't know about. Returns 0 on success, -1 on duplicate keys
+/// or reserved keys (quiche rejects collisions with its built-in setting
+/// IDs).
+#[no_mangle]
+pub extern "C" fn quiche_h3_config_set_additional_settings(
+    config: &mut h3::Config, settings: *const u64, settings_len: size_t,
+) -> c_int {
+    if settings.is_null() || settings_len == 0 || settings_len % 2 != 0 {
+        return -1;
+    }
+    let n_pairs = settings_len / 2;
+    let pairs_slice = unsafe { slice::from_raw_parts(settings, settings_len) };
+    let mut out: Vec<(u64, u64)> = Vec::with_capacity(n_pairs);
+    for i in 0..n_pairs {
+        out.push((pairs_slice[i * 2], pairs_slice[i * 2 + 1]));
+    }
+    match config.set_additional_settings(out) {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn quiche_h3_config_free(config: *mut h3::Config) {
     drop(unsafe { Box::from_raw(config) });

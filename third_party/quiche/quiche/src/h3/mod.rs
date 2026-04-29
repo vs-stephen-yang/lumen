@@ -2243,6 +2243,7 @@ impl Connection {
             raw: Default::default(),
         };
 
+
         let mut d = [42; 128];
         let mut b = octets::OctetsMut::with_slice(&mut d);
 

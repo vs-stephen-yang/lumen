@@ -1023,6 +1023,15 @@ void quiche_h3_config_set_qpack_blocked_streams(quiche_h3_config *config, uint64
 // Sets the `SETTINGS_ENABLE_CONNECT_PROTOCOL` setting.
 void quiche_h3_config_enable_extended_connect(quiche_h3_config *config, bool enabled);
 
+// Lumen patch: append additional SETTINGS pairs (id, value) to the outgoing
+// H3 SETTINGS frame. `settings` points to `settings_len` u64 values
+// arranged as [id0, value0, id1, value1, ...]. Used for WebTransport's
+// SETTINGS_WT_MAX_SESSIONS that quiche doesn't natively send.
+// Returns 0 on success, -1 on error.
+int quiche_h3_config_set_additional_settings(quiche_h3_config *config,
+                                             const uint64_t *settings,
+                                             size_t settings_len);
+
 // Frees the HTTP/3 config object.
 void quiche_h3_config_free(quiche_h3_config *config);
 

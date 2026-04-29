@@ -59,4 +59,17 @@ void ReleaseSelfSignedCert(SelfSignedCert& cert);
 /// and for putting into JSON.
 std::string Sha256ToHex(const std::array<uint8_t, 32>& hash);
 
+/// Export the certificate as a PEM string (BEGIN/END CERTIFICATE).
+std::string ExportCertPem(const SelfSignedCert& cert);
+
+/// Export the private key as a PEM PKCS#8 string (BEGIN/END PRIVATE KEY).
+/// Returns an empty string on failure.
+std::string ExportPrivKeyPem(const SelfSignedCert& cert);
+
+/// Convenience: write both PEMs to `cert_path` and `key_path`. Overwrites
+/// any existing files. Returns true on success.
+bool WriteCertAndKeyPemFiles(const SelfSignedCert& cert,
+                              const std::string& cert_path,
+                              const std::string& key_path);
+
 }  // namespace lumen

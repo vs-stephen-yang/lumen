@@ -39,7 +39,8 @@ std::string SerializeSession(const SessionConfig& s) {
       << "\"transport\":{"
       <<   "\"kind\":\""        << EscapeJson(s.transport.kind)        << "\","
       <<   "\"url\":\""         << EscapeJson(s.transport.url)         << "\","
-      <<   "\"ssrc\":"          << s.transport.ssrc
+      <<   "\"ssrc\":"          << s.transport.ssrc                    << ","
+      <<   "\"cert_sha256\":\"" << EscapeJson(s.transport.cert_sha256) << "\""
       << "},"
       << "\"video\":{"
       <<   "\"codec\":\""       << EscapeJson(s.video.codec)           << "\","
