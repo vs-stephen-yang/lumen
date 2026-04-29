@@ -80,6 +80,12 @@ if(WIN32)
     target_link_libraries(cert_util_pem_smoke_test PRIVATE
         lumen_platform_windows
     )
+
+    # End-to-end: real web_receiver.exe + headless Chrome WebTransport.
+    add_executable(web_e2e_test
+        web_e2e_test.cpp
+    )
+    add_dependencies(web_e2e_test web_receiver)
 endif()
 
 if(WIN32)

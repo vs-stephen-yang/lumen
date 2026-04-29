@@ -134,6 +134,12 @@
             if (text === 'echo: hello-from-browser') {
                 setStatus('OK');
                 write('Round-trip verified', 'ok');
+                // Send a confirmation datagram the receiver can log
+                // so out-of-process tests can wait for proof of the
+                // round-trip without depending on DOM-dump timing.
+                const w2 = wt.datagrams.writable.getWriter();
+                await w2.write(new TextEncoder().encode('round-trip-confirmed'));
+                w2.releaseLock();
             } else {
                 setStatus('WRONG_PAYLOAD');
                 write('Unexpected echo payload', 'err');
