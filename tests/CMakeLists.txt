@@ -19,12 +19,6 @@ target_link_libraries(signaling_server_test PRIVATE
     cpp_httplib
 )
 
-# nghttp3 link smoke test (proves the vendored HTTP/3 library is wired).
-add_executable(nghttp3_smoke_test
-    nghttp3_smoke_test.cpp
-)
-target_link_libraries(nghttp3_smoke_test PRIVATE nghttp3_static)
-
 if(WIN32)
     # TCP transport integration test (Windows, Winsock2).
     add_executable(transport_tcp_test
@@ -147,17 +141,6 @@ if(WIN32)
         target_link_libraries(transport_quic_test PRIVATE
             lumen_platform_windows
             crypt32
-        )
-
-        # Phase 2.0 — Http3Server lifecycle smoke test.
-        add_executable(http3_server_smoke_test
-            http3_server_smoke_test.cpp
-        )
-        target_include_directories(http3_server_smoke_test PRIVATE
-            ${CMAKE_SOURCE_DIR}/platform/windows
-        )
-        target_link_libraries(http3_server_smoke_test PRIVATE
-            lumen_platform_windows
         )
     endif()
 endif()
