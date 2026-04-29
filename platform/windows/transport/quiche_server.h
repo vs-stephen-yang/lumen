@@ -26,6 +26,8 @@
 
 struct quiche_config;
 struct quiche_conn;
+struct quiche_h3_config;
+struct quiche_h3_conn;
 
 namespace lumen {
 
@@ -51,6 +53,10 @@ struct QuicheServerConfig {
     bool enable_dgram = true;
     uint64_t dgram_recv_queue_len = 1024;
     uint64_t dgram_send_queue_len = 1024;
+
+    // HTTP/3
+    bool enable_h3 = true;
+    bool enable_h3_extended_connect = true;  // required for WebTransport
 };
 
 class QuicheServer {
@@ -81,12 +87,14 @@ private:
     void RecvLoop();
     void HandlePacket(const uint8_t* data, size_t size,
                       const sockaddr_storage& peer, socklen_t peer_len);
+    void DriveHttp3(Connection* conn);
     void FlushEgress(Connection* conn);
     void GcClosed();
     void OnTimers();
 
     QuicheServerConfig user_cfg_;
     quiche_config* quiche_cfg_ = nullptr;
+    quiche_h3_config* h3_cfg_ = nullptr;
 
     SOCKET sock_ = INVALID_SOCKET;
     sockaddr_storage local_addr_ = {};

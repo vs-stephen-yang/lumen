@@ -42,12 +42,14 @@ std::string ToKey(const uint8_t* p, size_t n) {
 struct QuicheServer::Connection {
     std::vector<uint8_t> scid;          // 16 random bytes we use to identify this conn
     quiche_conn* qc = nullptr;
+    quiche_h3_conn* h3 = nullptr;       // lazily constructed once is_established
     sockaddr_storage peer = {};
     socklen_t peer_len = 0;
     std::chrono::steady_clock::time_point next_timeout =
         (std::chrono::steady_clock::time_point::max)();
 
     ~Connection() {
+        if (h3) quiche_h3_conn_free(h3);
         if (qc) quiche_conn_free(qc);
     }
 };
@@ -107,6 +109,16 @@ Result<void> QuicheServer::Initialize(const QuicheServerConfig& cfg) {
         quiche_config_enable_dgram(quiche_cfg_, true,
                                      cfg.dgram_recv_queue_len,
                                      cfg.dgram_send_queue_len);
+    }
+
+    if (cfg.enable_h3) {
+        h3_cfg_ = quiche_h3_config_new();
+        if (!h3_cfg_) {
+            return Error::Make(ErrorCode::kTransportError,
+                                "quiche_h3_config_new failed");
+        }
+        quiche_h3_config_enable_extended_connect(
+            h3_cfg_, cfg.enable_h3_extended_connect);
     }
 
     return {};
@@ -170,6 +182,10 @@ void QuicheServer::Shutdown() {
     {
         std::lock_guard<std::mutex> lock(conns_mu_);
         conns_.clear();  // ~Connection frees quiche_conn
+    }
+    if (h3_cfg_) {
+        quiche_h3_config_free(h3_cfg_);
+        h3_cfg_ = nullptr;
     }
     if (quiche_cfg_) {
         quiche_config_free(quiche_cfg_);
@@ -281,7 +297,60 @@ void QuicheServer::HandlePacket(const uint8_t* data, size_t size,
     (void)quiche_conn_recv(conn->qc, const_cast<uint8_t*>(data), size,
                             &recv_info);
 
+    if (h3_cfg_ && quiche_conn_is_established(conn->qc)) {
+        DriveHttp3(conn);
+    }
+
     FlushEgress(conn);
+}
+
+void QuicheServer::DriveHttp3(Connection* conn) {
+    if (!conn->h3) {
+        conn->h3 = quiche_h3_conn_new_with_transport(conn->qc, h3_cfg_);
+        if (!conn->h3) return;
+    }
+
+    while (true) {
+        quiche_h3_event* ev = nullptr;
+        int64_t s = quiche_h3_conn_poll(conn->h3, conn->qc, &ev);
+        if (s < 0) break;
+
+        switch (quiche_h3_event_type(ev)) {
+            case QUICHE_H3_EVENT_HEADERS: {
+                // Phase 2.2: hardcoded 200 OK reply on every request.
+                // Per-route + extended-CONNECT (WebTransport) handling
+                // lands in Phase 2.3.
+                static const uint8_t kStatus[]   = ":status";
+                static const uint8_t kStatusVal[]= "200";
+                static const uint8_t kServer[]   = "server";
+                static const uint8_t kServerVal[]= "lumen-quiche";
+                static const uint8_t kCl[]       = "content-length";
+                static const uint8_t kClVal[]    = "3";
+                quiche_h3_header headers[] = {
+                    {kStatus,    sizeof(kStatus)    - 1, kStatusVal,
+                                  sizeof(kStatusVal) - 1},
+                    {kServer,    sizeof(kServer)    - 1, kServerVal,
+                                  sizeof(kServerVal) - 1},
+                    {kCl,        sizeof(kCl)        - 1, kClVal,
+                                  sizeof(kClVal)     - 1},
+                };
+                quiche_h3_send_response(conn->h3, conn->qc, s, headers,
+                                          3, false);
+                static const uint8_t kBody[] = "ok\n";
+                quiche_h3_send_body(conn->h3, conn->qc, s,
+                                     const_cast<uint8_t*>(kBody),
+                                     sizeof(kBody) - 1, true);
+                break;
+            }
+            case QUICHE_H3_EVENT_DATA:
+            case QUICHE_H3_EVENT_FINISHED:
+            case QUICHE_H3_EVENT_RESET:
+            case QUICHE_H3_EVENT_PRIORITY_UPDATE:
+            case QUICHE_H3_EVENT_GOAWAY:
+                break;
+        }
+        quiche_h3_event_free(ev);
+    }
 }
 
 void QuicheServer::FlushEgress(Connection* conn) {

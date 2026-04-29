@@ -36,6 +36,17 @@ if(WIN32)
     target_link_libraries(quiche_server_smoke_test PRIVATE
         lumen_platform_windows
     )
+
+    # Phase 2.2 — HTTP/3 GET → 200 round-trip smoke test.
+    add_executable(quiche_h3_smoke_test
+        quiche_h3_smoke_test.cpp
+    )
+    target_include_directories(quiche_h3_smoke_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/windows
+    )
+    target_link_libraries(quiche_h3_smoke_test PRIVATE
+        lumen_platform_windows
+    )
 endif()
 
 if(WIN32)
