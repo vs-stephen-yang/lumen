@@ -21,6 +21,7 @@ set(LUMEN_PLATFORM_WIN_SOURCES
     transport/ws_transport_connection.cpp
     transport/ws_transport_server.cpp
     transport/quiche_server.cpp
+    transport/wt_varint.cpp
 )
 
 # Native-only QUIC transport (msquic, Schannel TLS). Used for native↔native

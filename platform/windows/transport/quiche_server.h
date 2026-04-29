@@ -77,6 +77,13 @@ public:
     using WebTransportSessionCallback =
         std::function<void(const WebTransportSessionInfo&)>;
 
+    /// Fired on the recv thread for each incoming WebTransport datagram.
+    /// `conn_id`/`session_id` identify the session; `data` is the
+    /// payload after the session_id varint has been stripped.
+    using WebTransportDatagramCallback = std::function<void(
+        const std::string& conn_id, uint64_t session_id,
+        const uint8_t* data, size_t size)>;
+
     QuicheServer();
     ~QuicheServer();
 
@@ -104,6 +111,16 @@ public:
     /// established via extended CONNECT. The callback must not block.
     void SetOnWebTransportSession(WebTransportSessionCallback cb);
 
+    /// Set a callback fired for each incoming WT datagram on any session.
+    void SetOnWebTransportDatagram(WebTransportDatagramCallback cb);
+
+    /// Send a WebTransport datagram on the given session. The session_id
+    /// varint is prepended automatically; the caller passes only the
+    /// application payload.
+    Result<void> SendWebTransportDatagram(const std::string& conn_id,
+                                          uint64_t session_id,
+                                          const uint8_t* data, size_t size);
+
 private:
     struct Connection;
 
@@ -111,6 +128,7 @@ private:
     void HandlePacket(const uint8_t* data, size_t size,
                       const sockaddr_storage& peer, socklen_t peer_len);
     void DriveHttp3(Connection* conn);
+    void DrainDatagrams(Connection* conn);
     void FlushEgress(Connection* conn);
     void GcClosed();
     void OnTimers();
@@ -121,6 +139,7 @@ private:
 
     mutable std::mutex cb_mu_;
     WebTransportSessionCallback wt_callback_;
+    WebTransportDatagramCallback dgram_callback_;
 
     SOCKET sock_ = INVALID_SOCKET;
     sockaddr_storage local_addr_ = {};

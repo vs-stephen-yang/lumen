@@ -1,5 +1,7 @@
 #include "quiche_server.h"
 
+#include "wt_varint.h"
+
 #include <quiche.h>
 
 #include <bcrypt.h>
@@ -242,6 +244,53 @@ void QuicheServer::SetOnWebTransportSession(WebTransportSessionCallback cb) {
     wt_callback_ = std::move(cb);
 }
 
+void QuicheServer::SetOnWebTransportDatagram(
+    WebTransportDatagramCallback cb) {
+    std::lock_guard<std::mutex> lock(cb_mu_);
+    dgram_callback_ = std::move(cb);
+}
+
+Result<void> QuicheServer::SendWebTransportDatagram(
+    const std::string& conn_id, uint64_t session_id,
+    const uint8_t* data, size_t size) {
+
+    Connection* conn = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(conns_mu_);
+        auto it = conns_.find(conn_id);
+        if (it == conns_.end()) {
+            return Error::Make(ErrorCode::kTransportNotConnected,
+                                "no such conn_id");
+        }
+        if (it->second->wt_sessions.count(session_id) == 0) {
+            return Error::Make(ErrorCode::kTransportNotConnected,
+                                "session not established");
+        }
+        conn = it->second.get();
+    }
+
+    uint8_t prefix[8];
+    const size_t prefix_len = VarintEncode(session_id, prefix, sizeof(prefix));
+    if (prefix_len == 0) {
+        return Error::Make(ErrorCode::kInvalidArgument, "session_id too big");
+    }
+
+    std::vector<uint8_t> buf(prefix_len + size);
+    std::memcpy(buf.data(), prefix, prefix_len);
+    if (size) std::memcpy(buf.data() + prefix_len, data, size);
+
+    ssize_t rc = quiche_conn_dgram_send(conn->qc, buf.data(), buf.size());
+    if (rc < 0) {
+        return Error::Make(ErrorCode::kTransportError,
+                            "quiche_conn_dgram_send rc=" +
+                                std::to_string(rc));
+    }
+    // Egress will flush from the recv thread on the next iteration; we
+    // also kick a flush here for snappier sends.
+    FlushEgress(conn);
+    return {};
+}
+
 void QuicheServer::RecvLoop() {
     std::vector<uint8_t> buf(65535);
 
@@ -345,7 +394,34 @@ void QuicheServer::HandlePacket(const uint8_t* data, size_t size,
         DriveHttp3(conn);
     }
 
+    DrainDatagrams(conn);
+
     FlushEgress(conn);
+}
+
+void QuicheServer::DrainDatagrams(Connection* conn) {
+    uint8_t buf[1500];
+    while (true) {
+        ssize_t n = quiche_conn_dgram_recv(conn->qc, buf, sizeof(buf));
+        if (n <= 0) break;
+
+        uint64_t sid = 0;
+        const size_t consumed = VarintDecode(buf, static_cast<size_t>(n), &sid);
+        if (consumed == 0) continue;          // malformed
+        if (conn->wt_sessions.count(sid) == 0) continue;  // unknown session
+
+        WebTransportDatagramCallback cb;
+        {
+            std::lock_guard<std::mutex> lock(cb_mu_);
+            cb = dgram_callback_;
+        }
+        if (cb) {
+            cb(std::string(reinterpret_cast<const char*>(conn->scid.data()),
+                            conn->scid.size()),
+               sid, buf + consumed,
+               static_cast<size_t>(n) - consumed);
+        }
+    }
 }
 
 void QuicheServer::DriveHttp3(Connection* conn) {
