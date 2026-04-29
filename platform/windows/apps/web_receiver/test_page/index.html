@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Lumen WS connectivity test</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 2em; max-width: 720px; }
+        h1 { font-size: 1.2em; }
+        #log div { padding: 4px 0; border-bottom: 1px solid #eee; font-family: monospace; }
+        .info { color: #333; }
+        .ok   { color: #080; font-weight: bold; }
+        .err  { color: #c33; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Lumen WebSocket → local-server connectivity test</h1>
+    <p>This page is served by <code>web_receiver.exe</code>. It fetches
+       <code>/api/session</code> and tries to open the advertised
+       WebSocket. Watch the console below; <span class="ok">OPEN</span>
+       means a browser can reach a native WS server on localhost.</p>
+    <div id="log"></div>
+
+    <script>
+    const log = document.getElementById('log');
+    function write(msg, level = 'info') {
+        const el = document.createElement('div');
+        el.className = level;
+        el.textContent = msg;
+        log.appendChild(el);
+        console.log('[ws-test]', msg);
+    }
+
+    async function main() {
+        write('Fetching /api/session …');
+        let session;
+        try {
+            const res = await fetch('/api/session');
+            if (!res.ok) throw new Error('status ' + res.status);
+            session = await res.json();
+        } catch (e) {
+            write('Session fetch failed: ' + e.message, 'err');
+            return;
+        }
+        write('Session URL: ' + session.transport.url);
+
+        const ws = new WebSocket(session.transport.url);
+        ws.binaryType = 'arraybuffer';
+        write('readyState=' + ws.readyState + ' (CONNECTING)');
+
+        // Reflect status into document.title and a #status div, both of
+        // which `chrome --headless --dump-dom` will capture.
+        const statusEl = document.createElement('div');
+        statusEl.id = 'status';
+        statusEl.textContent = 'PENDING';
+        document.body.appendChild(statusEl);
+        const setStatus = (s) => {
+            statusEl.textContent = s;
+            document.title = s;
+        };
+
+        ws.onopen = () => {
+            write('OPEN — browser → native WS server works', 'ok');
+            setStatus('OPEN');
+            // Send a 3-byte control message so the server prints something.
+            //   [channel_id=2 = control][0x68 'h'][0x69 'i']
+            ws.send(new Uint8Array([2, 0x68, 0x69]));
+            write('Sent 3 bytes on control channel');
+        };
+        ws.onerror = () => { write('error event', 'err'); setStatus('ERROR'); };
+        ws.onclose = (ev) => write('CLOSE code=' + ev.code +
+                                    ' clean=' + ev.wasClean +
+                                    ' reason="' + ev.reason + '"');
+
+        // Block long enough that --dump-dom captures the result. Real
+        // browser sessions never hit this — the page just stays alive.
+        await new Promise(r => setTimeout(r, 4000));
+    }
+
+    main();
+    </script>
+</body>
+</html>
