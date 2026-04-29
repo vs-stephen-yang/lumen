@@ -1,0 +1,32 @@
+[package]
+name = "h3i"
+version = "0.4.0"
+authors = [
+  "Lucas Pardue <lucas@lucaspardue.com>",
+  "Evan Rittenhouse <evanrittenhouse@gmail.com>",
+]
+description = "Low-level HTTP/3 debugging and testing"
+rust-version = "1.81"
+edition = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+
+[dependencies]
+clap = "3"
+env_logger = { workspace = true }
+inquire = "0.6.2"
+log = { workspace = true, features = ["std"] }
+mio = { workspace = true, features = ["net", "os-poll"] }
+multimap = "0.10"
+octets = { workspace = true }
+qlog = { workspace = true }
+quiche = { workspace = true, features = ["internal", "qlog"] }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+smallvec = { workspace = true }
+url = { workspace = true }

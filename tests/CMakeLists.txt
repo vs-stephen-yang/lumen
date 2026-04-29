@@ -19,6 +19,12 @@ target_link_libraries(signaling_server_test PRIVATE
     cpp_httplib
 )
 
+# quiche FFI link smoke test (proves the cargo build + CMake bridge works).
+add_executable(quiche_smoke_test
+    quiche_smoke_test.cpp
+)
+target_link_libraries(quiche_smoke_test PRIVATE quiche)
+
 if(WIN32)
     # TCP transport integration test (Windows, Winsock2).
     add_executable(transport_tcp_test

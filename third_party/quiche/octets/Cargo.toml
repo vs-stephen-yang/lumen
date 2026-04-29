@@ -1,0 +1,10 @@
+[package]
+name = "octets"
+version = "0.3.0"
+authors = ["Alessandro Ghedini <alessandro@ghedini.me>"]
+description = "Zero-copy abstraction for parsing and constructing network packets"
+edition = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
