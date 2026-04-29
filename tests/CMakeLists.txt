@@ -19,6 +19,12 @@ target_link_libraries(signaling_server_test PRIVATE
     cpp_httplib
 )
 
+# nghttp3 link smoke test (proves the vendored HTTP/3 library is wired).
+add_executable(nghttp3_smoke_test
+    nghttp3_smoke_test.cpp
+)
+target_link_libraries(nghttp3_smoke_test PRIVATE nghttp3_static)
+
 if(WIN32)
     # TCP transport integration test (Windows, Winsock2).
     add_executable(transport_tcp_test
