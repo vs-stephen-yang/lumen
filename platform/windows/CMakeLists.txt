@@ -3,6 +3,7 @@
 
 set(LUMEN_PLATFORM_WIN_SOURCES
     common/d3d11_device_context.cpp
+    common/cert_util.cpp
     capture/dxgi_desktop_duplication.cpp
     capture/wasapi_loopback_capture.cpp
     codec/d3d11_color_converter.cpp
@@ -21,7 +22,8 @@ set(LUMEN_PLATFORM_WIN_SOURCES
     transport/ws_transport_server.cpp
 )
 
-# QUIC transport (requires msquic).
+# QUIC transport (requires msquic). HTTP/3 layer rides on the same QUIC
+# stack via nghttp3, so its sources are also gated on msquic_FOUND.
 find_package(msquic CONFIG QUIET)
 if(msquic_FOUND)
     list(APPEND LUMEN_PLATFORM_WIN_SOURCES
@@ -29,12 +31,14 @@ if(msquic_FOUND)
         transport/quic_transport_connection.cpp
         transport/quic_transport_client.cpp
         transport/quic_transport_server.cpp
+        transport/http3_connection.cpp
+        transport/http3_server.cpp
     )
     set(LUMEN_HAS_QUIC ON CACHE INTERNAL "")
-    message(STATUS "msquic found — building QUIC transport backend")
+    message(STATUS "msquic found — building QUIC + HTTP/3 transport backends")
 else()
     set(LUMEN_HAS_QUIC OFF CACHE INTERNAL "")
-    message(STATUS "msquic not found — skipping QUIC transport backend")
+    message(STATUS "msquic not found — skipping QUIC and HTTP/3 transport")
 endif()
 
 add_library(lumen_platform_windows STATIC ${LUMEN_PLATFORM_WIN_SOURCES})
@@ -60,8 +64,13 @@ target_link_libraries(lumen_platform_windows PUBLIC
     bcrypt
 )
 
+target_link_libraries(lumen_platform_windows PRIVATE
+    crypt32
+    ncrypt
+)
+
 if(LUMEN_HAS_QUIC)
-    target_link_libraries(lumen_platform_windows PUBLIC msquic ntdll)
+    target_link_libraries(lumen_platform_windows PUBLIC msquic ntdll nghttp3_static)
     target_compile_definitions(lumen_platform_windows PUBLIC LUMEN_HAS_QUIC=1)
 endif()
 

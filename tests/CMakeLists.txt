@@ -148,5 +148,16 @@ if(WIN32)
             lumen_platform_windows
             crypt32
         )
+
+        # Phase 2.0 — Http3Server lifecycle smoke test.
+        add_executable(http3_server_smoke_test
+            http3_server_smoke_test.cpp
+        )
+        target_include_directories(http3_server_smoke_test PRIVATE
+            ${CMAKE_SOURCE_DIR}/platform/windows
+        )
+        target_link_libraries(http3_server_smoke_test PRIVATE
+            lumen_platform_windows
+        )
     endif()
 endif()
