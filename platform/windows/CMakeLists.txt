@@ -20,6 +20,7 @@ set(LUMEN_PLATFORM_WIN_SOURCES
     transport/ws_transport_channel.cpp
     transport/ws_transport_connection.cpp
     transport/ws_transport_server.cpp
+    transport/quiche_server.cpp
 )
 
 # Native-only QUIC transport (msquic, Schannel TLS). Used for native↔native
@@ -63,9 +64,9 @@ target_link_libraries(lumen_platform_windows PUBLIC
     bcrypt
 )
 
-target_link_libraries(lumen_platform_windows PRIVATE
-    crypt32
-    ncrypt
+target_link_libraries(lumen_platform_windows
+    PUBLIC quiche
+    PRIVATE crypt32 ncrypt
 )
 
 if(LUMEN_HAS_QUIC)

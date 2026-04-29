@@ -26,6 +26,19 @@ add_executable(quiche_smoke_test
 target_link_libraries(quiche_smoke_test PRIVATE quiche)
 
 if(WIN32)
+    # Phase 2.1 — QuicheServer end-to-end QUIC handshake smoke test.
+    add_executable(quiche_server_smoke_test
+        quiche_server_smoke_test.cpp
+    )
+    target_include_directories(quiche_server_smoke_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/windows
+    )
+    target_link_libraries(quiche_server_smoke_test PRIVATE
+        lumen_platform_windows
+    )
+endif()
+
+if(WIN32)
     # TCP transport integration test (Windows, Winsock2).
     add_executable(transport_tcp_test
         transport_tcp_test.cpp
