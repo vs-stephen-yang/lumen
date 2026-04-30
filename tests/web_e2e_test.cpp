@@ -201,45 +201,75 @@ void test_browser_to_receiver_round_trip() {
     std::string chrome_bs = chrome;
     for (auto& c : chrome_bs) if (c == '/') c = '\\';
 
+    // Drive Chrome on real wall-clock time (no --virtual-time-budget,
+    // no --dump-dom) — the page encodes ~120 video frames in ~6s and
+    // signals completion via a control-channel "done:..." datagram.
+    // The receiver picks that up and prints FINAL_STATS, which we wait
+    // for here.
     std::string chrome_cmd = "\"" + chrome_bs + "\""
         " --headless=new"
-        " --disable-gpu"
         " --user-data-dir=\"" + user_data + "\""
-        " --virtual-time-budget=15000"
-        " --dump-dom \"http://localhost:" + std::to_string(kSignalPort) +
-        "/sender/\"";
+        " --use-fake-device-for-media-stream"
+        " --use-fake-ui-for-media-stream"
+        " --autoplay-policy=no-user-gesture-required"
+        " \"http://localhost:" + std::to_string(kSignalPort) +
+        "/sender/?frames=120&seconds=8\"";
 
     ChildJob chrome_job;
     CHECK_AND_DUMP(chrome_job.Spawn(chrome_cmd, dom_path), "spawn chrome");
 
-    // The page's async main() runs on real time, but Chrome's
-    // --dump-dom can return before the round-trip's reader.read()
-    // resolves. So we don't rely on the DOM dump alone — we wait for
-    // the receiver to log the confirmation datagram the page sends
-    // *after* it observed the echo. That's a hard signal of full
-    // round-trip success.
-    const bool round_trip = WaitForMarker(recv_log,
-                                            "round-trip-confirmed", 15s);
-    DWORD wait_rc = WaitForSingleObject(chrome_job.pi.hProcess, 5000);
-    DWORD chrome_rc = 1;
-    if (wait_rc == WAIT_OBJECT_0) {
-        GetExitCodeProcess(chrome_job.pi.hProcess, &chrome_rc);
-    }
-    std::printf("[e2e] chrome wait_rc=%lu exit=%lu round_trip=%d\n",
-                 wait_rc, chrome_rc, round_trip ? 1 : 0);
+    const bool finished = WaitForMarker(recv_log, "FINAL_STATS:", 25s);
+    Sleep(500);
+    chrome_job.Kill();
 
-    // Pull final state.
     const std::string log = SlurpFile(recv_log);
-    const std::string dom = SlurpFile(dom_path);
 
-    // Assertions on the receiver side (the source of truth for the
-    // round-trip having completed).
-    CHECK_AND_DUMP(log.find("[wt] session #1 established") != std::string::npos,
+    CHECK_AND_DUMP(finished, "receiver never produced a FINAL_STATS line");
+    CHECK_AND_DUMP(log.find("[wt] session established") != std::string::npos,
                     "receiver did not log a session");
-    CHECK_AND_DUMP(log.find("hello-from-browser") != std::string::npos,
-                    "receiver did not see the browser's first datagram");
-    CHECK_AND_DUMP(round_trip,
-                    "page never sent the round-trip-confirmed datagram");
+
+    // Parse FINAL_STATS for the metrics. Format (one line):
+    //   FINAL_STATS: dt_s=N video_received=N video_decoded=N
+    //                video_decode_errors=N video_keyframes=N
+    //                video_bytes=N audio_received=N audio_bytes=N
+    //                video_recv_fps=N video_decode_fps=N audio_pkt_per_s=N
+    auto extract = [&](const char* key) -> double {
+        std::string m(key);
+        m += "=";
+        const auto p = log.find(m);
+        if (p == std::string::npos) return -1;
+        return std::strtod(log.c_str() + p + m.size(), nullptr);
+    };
+    const double video_received  = extract("video_received");
+    const double video_decoded   = extract("video_decoded");
+    const double video_keyframes = extract("video_keyframes");
+    const double video_bytes     = extract("video_bytes");
+    const double audio_received  = extract("audio_received");
+    const double audio_bytes     = extract("audio_bytes");
+    const double video_recv_fps  = extract("video_recv_fps");
+    const double video_dec_fps   = extract("video_decode_fps");
+    const double audio_pkt_per_s = extract("audio_pkt_per_s");
+
+    std::printf("[e2e] FPS — video: received=%.0f decoded=%.0f keyframes=%.0f "
+                 "bytes=%.0f recv_fps=%.2f decode_fps=%.2f\n",
+                 video_received, video_decoded, video_keyframes, video_bytes,
+                 video_recv_fps, video_dec_fps);
+    std::printf("[e2e]       audio: received=%.0f bytes=%.0f pkt_per_s=%.2f\n",
+                 audio_received, audio_bytes, audio_pkt_per_s);
+
+    CHECK_AND_DUMP(video_received >= 60,
+                    "fewer than 60 video chunks received");
+    CHECK_AND_DUMP(video_keyframes >= 1, "no keyframes received");
+    CHECK_AND_DUMP(audio_received >= 100,
+                    "fewer than 100 audio packets received");
+    CHECK_AND_DUMP(video_recv_fps >= 5.0, "video recv fps below threshold");
+    // Decoded count may be 0 on a host without an MFT decoder. When
+    // decoder is active, allow up to 5 frames lost (queue tail drained
+    // late etc).
+    if (video_dec_fps > 0) {
+        CHECK_AND_DUMP(video_decoded >= video_received - 5,
+                        "decoder dropped more than 5 frames");
+    }
 
     std::printf("[e2e] OK — browser ↔ receiver round-trip\n");
 

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
-    <title>Lumen WebTransport connectivity test</title>
+    <title>Lumen WebTransport video+audio test</title>
     <style>
         body { font-family: system-ui, sans-serif; margin: 2em; max-width: 720px; }
         h1 { font-size: 1.2em; }
@@ -10,20 +10,56 @@
         .info { color: #333; }
         .ok   { color: #080; font-weight: bold; }
         .err  { color: #c33; font-weight: bold; }
+        #fps  { font-family: monospace; font-size: 1.05em; padding: 6px 0; }
     </style>
 </head>
 <body>
-    <h1>Lumen WebTransport ↔ native receiver test</h1>
-    <p>Page is served by <code>web_receiver.exe</code>. It fetches
-       <code>/api/session</code>, opens a <code>WebTransport</code>
-       connection pinning the receiver's self-signed cert by SHA-256
-       hash, sends a datagram, expects an echo back from the server.
-       Browser support: Chrome / Edge / Firefox / Safari since Q1 2026.</p>
+    <h1>Lumen WebCodecs → WebTransport → native receiver</h1>
+    <p>The page captures a synthetic video+mic stream (Chromium fake
+       device), encodes via <code>WebCodecs</code>, prepends a
+       <code>MediaPacketHeader</code> + channel byte, fragments to
+       fit a WebTransport datagram, and ships them. The receiver
+       reassembles, decodes, and reports FPS.</p>
+    <div id="fps">fps: pending…</div>
     <div id="log"></div>
     <div id="status">PENDING</div>
 
     <script>
+    // ────────────────────────────────────────────────────────────────
+    //   Wire format (mirrors src/transport/src/media_packet_header.cpp)
+    //   and packetization params
+    // ────────────────────────────────────────────────────────────────
+    const HEADER_SIZE = 28;
+    const FLAG_KEYFRAME      = 0x1;
+    const FLAG_LAST_FRAGMENT = 0x2;
+    const MAX_PAYLOAD = 1100;       // keep under WT datagram MTU (~1.2KB)
+    const SSRC_VIDEO  = 0x10000001;
+    const SSRC_AUDIO  = 0x10000002;
+    const CHAN_VIDEO  = 0;          // ChannelType::kVideo
+    const CHAN_AUDIO  = 1;          // ChannelType::kAudio
+    const CHAN_CTRL   = 2;          // ChannelType::kControl
+
+    function setBigU64(view, off, v) {
+        view.setBigUint64(off, typeof v === 'bigint' ? v : BigInt(v), false);
+    }
+    function serializeHeader(buf, h) {
+        const view = new DataView(buf.buffer, buf.byteOffset, HEADER_SIZE);
+        view.setUint32(0, h.ssrc >>> 0, false);
+        setBigU64(view, 4,  h.frameIndex);
+        setBigU64(view, 12, h.timestampUs);
+        view.setUint16(20, h.fragmentIndex & 0xFFFF, false);
+        view.setUint16(22, h.fragmentCount & 0xFFFF, false);
+        let flags = 0;
+        if (h.isKeyframe)     flags |= FLAG_KEYFRAME;
+        if (h.isLastFragment) flags |= FLAG_LAST_FRAGMENT;
+        view.setUint32(24, flags >>> 0, false);
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    //   UI helpers
+    // ────────────────────────────────────────────────────────────────
     const log = document.getElementById('log');
+    const fpsEl = document.getElementById('fps');
     const statusEl = document.getElementById('status');
     function write(msg, level = 'info') {
         const el = document.createElement('div');
@@ -31,11 +67,7 @@
         el.textContent = msg;
         log.appendChild(el);
     }
-    function setStatus(s) {
-        statusEl.textContent = s;
-        document.title = s;
-    }
-
+    function setStatus(s) { statusEl.textContent = s; document.title = s; }
     function hexToBytes(hex) {
         const out = new Uint8Array(hex.length / 2);
         for (let i = 0; i < out.length; ++i) {
@@ -44,41 +76,38 @@
         return out;
     }
 
-    // QUIC varint encode (RFC 9000 §16) — for the WT datagram session_id prefix.
-    function encodeVarint(value) {
-        if (value < 64n) return new Uint8Array([Number(value)]);
-        if (value < 16384n) {
-            return new Uint8Array([
-                0x40 | Number((value >> 8n) & 0x3Fn),
-                Number(value & 0xFFn),
-            ]);
+    // ────────────────────────────────────────────────────────────────
+    //   Sender: fragment a chunk into [chan][header][payload] datagrams
+    // ────────────────────────────────────────────────────────────────
+    function makeFragments({channel, ssrc, frameIndex, timestampUs,
+                            isKeyframe, payload}) {
+        const total = Math.max(1, Math.ceil(payload.byteLength / MAX_PAYLOAD));
+        const out = [];
+        for (let i = 0; i < total; ++i) {
+            const start = i * MAX_PAYLOAD;
+            const end = Math.min(start + MAX_PAYLOAD, payload.byteLength);
+            const slice = payload.subarray(start, end);
+            const dgram = new Uint8Array(1 + HEADER_SIZE + slice.byteLength);
+            dgram[0] = channel;
+            const hdr = dgram.subarray(1, 1 + HEADER_SIZE);
+            serializeHeader(hdr, {
+                ssrc, frameIndex, timestampUs,
+                fragmentIndex: i, fragmentCount: total,
+                isKeyframe: isKeyframe && i === 0,
+                isLastFragment: i === total - 1,
+            });
+            dgram.set(slice, 1 + HEADER_SIZE);
+            out.push(dgram);
         }
-        if (value < (1n << 30n)) {
-            return new Uint8Array([
-                0x80 | Number((value >> 24n) & 0x3Fn),
-                Number((value >> 16n) & 0xFFn),
-                Number((value >>  8n) & 0xFFn),
-                Number( value         & 0xFFn),
-            ]);
-        }
-        const out = new Uint8Array(8);
-        for (let i = 7; i >= 0; --i) {
-            out[i] = Number(value & 0xFFn);
-            value >>= 8n;
-        }
-        out[0] |= 0xC0;
         return out;
-    }
-    function decodeVarint(buf) {
-        const prefix = buf[0] >> 6;
-        const len = prefix === 0 ? 1 : prefix === 1 ? 2 :
-                    prefix === 2 ? 4 : 8;
-        let v = BigInt(buf[0] & 0x3F);
-        for (let i = 1; i < len; ++i) v = (v << 8n) | BigInt(buf[i]);
-        return { value: v, len };
     }
 
     async function main() {
+        // Read query params (the test pins these via the URL).
+        const q = new URLSearchParams(location.search);
+        const targetFrames = parseInt(q.get('frames') || '120', 10);
+        const targetSeconds = parseFloat(q.get('seconds') || '6');
+
         write('Fetching /api/session …');
         let session;
         try {
@@ -87,73 +116,218 @@
             session = await res.json();
         } catch (e) {
             write('Session fetch failed: ' + e.message, 'err');
-            setStatus('ERROR');
-            return;
+            setStatus('ERROR'); return;
         }
         write('transport.url = ' + session.transport.url);
-        write('cert_sha256   = ' + session.transport.cert_sha256);
 
         if (typeof WebTransport === 'undefined') {
-            write('WebTransport API not available in this browser', 'err');
-            setStatus('ERROR');
-            return;
+            write('WebTransport API not available', 'err');
+            setStatus('ERROR'); return;
+        }
+        if (typeof VideoEncoder === 'undefined' ||
+            typeof AudioEncoder === 'undefined') {
+            write('WebCodecs not available', 'err');
+            setStatus('ERROR'); return;
         }
 
+        // ── Open the WT connection ──────────────────────────────────
         const wt = new WebTransport(session.transport.url, {
             serverCertificateHashes: [{
                 algorithm: 'sha-256',
                 value: hexToBytes(session.transport.cert_sha256),
             }],
         });
-
-        try {
-            await wt.ready;
-        } catch (e) {
+        try { await wt.ready; }
+        catch (e) {
             write('WebTransport.ready rejected: ' + e.message, 'err');
-            setStatus('ERROR');
-            return;
+            setStatus('ERROR'); return;
         }
         write('WebTransport open', 'ok');
-
-        // Send a datagram. Browser-side WT datagrams DON'T include the
-        // session_id prefix — the WebTransport implementation handles
-        // that for us.
         const writer = wt.datagrams.writable.getWriter();
-        await writer.write(new TextEncoder().encode('hello-from-browser'));
-        writer.releaseLock();
-        write('Sent datagram: "hello-from-browser"');
 
-        // Read one datagram back.
-        const reader = wt.datagrams.readable.getReader();
-        const timeout = new Promise((_, rej) =>
-            setTimeout(() => rej(new Error('timeout')), 3000));
-        try {
-            const { value } = await Promise.race([reader.read(), timeout]);
-            const text = new TextDecoder().decode(value);
-            write('Got datagram: "' + text + '"');
-            if (text === 'echo: hello-from-browser') {
-                setStatus('OK');
-                write('Round-trip verified', 'ok');
-                // Send a confirmation datagram the receiver can log
-                // so out-of-process tests can wait for proof of the
-                // round-trip without depending on DOM-dump timing.
-                const w2 = wt.datagrams.writable.getWriter();
-                await w2.write(new TextEncoder().encode('round-trip-confirmed'));
-                w2.releaseLock();
-            } else {
-                setStatus('WRONG_PAYLOAD');
-                write('Unexpected echo payload', 'err');
+        // ── Pick a video codec the browser actually supports ────────
+        const vCodecCandidates = [
+            { codec: 'avc1.42E01E', isAvc: true },   // H.264 baseline (Annex B)
+            { codec: 'avc1.640028', isAvc: true },   // H.264 high
+            { codec: 'vp8',         isAvc: false },  // SW fallback (no native decode)
+        ];
+        let vConfig = null;
+        let vIsAvc = false;
+        for (const c of vCodecCandidates) {
+            const cfg = {
+                codec: c.codec,
+                width: 320, height: 240,
+                framerate: 30,
+                bitrate: 200_000,
+                latencyMode: 'realtime',
+                hardwareAcceleration: 'no-preference',
+            };
+            if (c.isAvc) cfg.avc = { format: 'annexb' };
+            try {
+                const r = await VideoEncoder.isConfigSupported(cfg);
+                write('  ' + c.codec + ': supported=' + (r && r.supported));
+                if (r && r.supported) {
+                    vConfig = cfg;
+                    vIsAvc = c.isAvc;
+                    break;
+                }
+            } catch (e) {
+                write('  ' + c.codec + ': error ' + e.message, 'err');
             }
-        } catch (e) {
-            write('Datagram read failed: ' + e.message, 'err');
-            setStatus('ERROR');
         }
+        if (!vConfig) {
+            write('No supported video codec', 'err');
+            setStatus('ERROR'); return;
+        }
+        write('video codec = ' + vConfig.codec);
 
-        // Block long enough for headless --dump-dom to capture the result.
-        await new Promise(r => setTimeout(r, 4000));
+        // ── Source: synthetic video + audio via Chromium fake device ─
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    width: vConfig.width, height: vConfig.height,
+                    frameRate: vConfig.framerate,
+                },
+                audio: { sampleRate: 48000, channelCount: 2 },
+            });
+        } catch (e) {
+            write('getUserMedia failed: ' + e.message, 'err');
+            setStatus('ERROR'); return;
+        }
+        const [vTrack] = stream.getVideoTracks();
+        const [aTrack] = stream.getAudioTracks();
+
+        // ── Encoders ────────────────────────────────────────────────
+        let videoFrameIndex = 0n;
+        let audioFrameIndex = 0n;
+        let sentVideoChunks = 0;
+        let sentAudioChunks = 0;
+        let lastReport = performance.now();
+
+        const videoEnc = new VideoEncoder({
+            output: (chunk, _meta) => {
+                const buf = new Uint8Array(chunk.byteLength);
+                chunk.copyTo(buf);
+                const fragments = makeFragments({
+                    channel: CHAN_VIDEO,
+                    ssrc: SSRC_VIDEO,
+                    frameIndex: videoFrameIndex,
+                    timestampUs: BigInt(Math.round(chunk.timestamp || 0)),
+                    isKeyframe: chunk.type === 'key',
+                    payload: buf,
+                });
+                videoFrameIndex++;
+                sentVideoChunks++;
+                for (const f of fragments) writer.write(f);
+            },
+            error: e => write('VideoEncoder error: ' + e.message, 'err'),
+        });
+        videoEnc.configure(vConfig);
+
+        const aConfig = {
+            codec: 'opus',
+            sampleRate: 48000,
+            numberOfChannels: 2,
+            bitrate: 64_000,
+        };
+        const audioEnc = new AudioEncoder({
+            output: (chunk, _meta) => {
+                const buf = new Uint8Array(chunk.byteLength);
+                chunk.copyTo(buf);
+                const fragments = makeFragments({
+                    channel: CHAN_AUDIO,
+                    ssrc: SSRC_AUDIO,
+                    frameIndex: audioFrameIndex,
+                    timestampUs: BigInt(Math.round(chunk.timestamp || 0)),
+                    isKeyframe: false,
+                    payload: buf,
+                });
+                audioFrameIndex++;
+                sentAudioChunks++;
+                for (const f of fragments) writer.write(f);
+            },
+            error: e => write('AudioEncoder error: ' + e.message, 'err'),
+        });
+        audioEnc.configure(aConfig);
+
+        // ── Pump frames from MediaStreamTrack into encoders ─────────
+        const vProc = new MediaStreamTrackProcessor({ track: vTrack });
+        const aProc = new MediaStreamTrackProcessor({ track: aTrack });
+        const vReader = vProc.readable.getReader();
+        const aReader = aProc.readable.getReader();
+
+        const start = performance.now();
+        let stopped = false;
+        const stop = (reason) => {
+            if (stopped) return; stopped = true;
+            write('stopping: ' + reason);
+        };
+
+        // Periodic FPS heartbeat in the page UI.
+        const heartbeat = setInterval(() => {
+            const dt = (performance.now() - start) / 1000;
+            const vFps = (sentVideoChunks / Math.max(0.001, dt)).toFixed(1);
+            fpsEl.textContent =
+                `sent: video=${sentVideoChunks} (${vFps} fps), audio=${sentAudioChunks} ` +
+                `over ${dt.toFixed(2)}s`;
+        }, 250);
+
+        // Audio pump.
+        (async () => {
+            while (!stopped) {
+                const { value, done } = await aReader.read();
+                if (done) break;
+                if (audioEnc.state === 'configured') audioEnc.encode(value);
+                value.close();
+            }
+        })();
+
+        // Video pump (drives the lifecycle — when N frames sent, stop).
+        while (!stopped && sentVideoChunks < targetFrames &&
+               (performance.now() - start) / 1000 < targetSeconds) {
+            const { value, done } = await vReader.read();
+            if (done) break;
+            if (videoEnc.state === 'configured') videoEnc.encode(value);
+            value.close();
+        }
+        stop('target reached');
+
+        try { await videoEnc.flush(); } catch (_) {}
+        try { await audioEnc.flush(); } catch (_) {}
+        clearInterval(heartbeat);
+
+        const dt = (performance.now() - start) / 1000;
+        const vFps = (sentVideoChunks / dt).toFixed(2);
+        write(`sent ${sentVideoChunks} video, ${sentAudioChunks} audio in ${dt.toFixed(2)}s ` +
+              `(send video fps=${vFps})`, 'ok');
+
+        // Tell the receiver we're done, with the frame counts so it can
+        // emit a FINAL_STATS line keyed off this marker.
+        const doneMsg = `done:video=${sentVideoChunks},audio=${sentAudioChunks},dt_ms=${Math.round(dt*1000)}`;
+        const ctrlBytes = new TextEncoder().encode(doneMsg);
+        const ctrlFrag = makeFragments({
+            channel: CHAN_CTRL,
+            ssrc: 0,
+            frameIndex: 0n,
+            timestampUs: 0n,
+            isKeyframe: false,
+            payload: ctrlBytes,
+        });
+        for (const f of ctrlFrag) await writer.write(f);
+        await writer.close();
+
+        setStatus('OK');
+
+        // Keep the page alive a bit so the receiver's logs flush before
+        // headless --dump-dom captures.
+        await new Promise(r => setTimeout(r, 1500));
     }
 
-    main();
+    main().catch(e => {
+        write('uncaught: ' + e.message, 'err');
+        setStatus('ERROR');
+    });
     </script>
 </body>
 </html>

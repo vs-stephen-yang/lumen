@@ -1,38 +1,49 @@
 // web_receiver.exe — Lumen receiver for the web sender.
 //
-// Phase 2.5 wiring: real WebTransport receiver.
+// Phase 2.5+: real WebCodecs encode → WebTransport → native decode pipeline.
 //
 //   - Generates an ECDSA P-256 self-signed cert at startup and writes
-//     it as PEM to two files in %TEMP%. The cert's SHA-256 fingerprint
-//     is advertised via /api/session so the browser can pin it via
+//     it as PEM to two files in %TEMP%. The cert SHA-256 is advertised
+//     via /api/session so the browser pins it via
 //     `new WebTransport(url, { serverCertificateHashes: [...] })`.
 //
 //   - QuicheServer hosts the WebTransport endpoint on udp/<wt-port>.
-//     Each established session is logged; incoming WT datagrams are
-//     echoed back with an "echo: " prefix so the browser test page
-//     can verify the round-trip.
 //
-//   - SignalingServer hosts /api/session + the static test page.
+//   - Each WT datagram payload is `[channel_id:u8][MediaPacketHeader:28]
+//     [fragment payload]`. Fragments are reassembled via FrameReassembler
+//     (one per channel). Reassembled video frames are fed to
+//     MfVideoDecoder; audio packets are counted (Opus decode is left
+//     as a follow-up).
 //
-// (The legacy WebSocket path is left in tree for the moment but is no
-//  longer started by this binary — it can be re-enabled by passing
-//  --legacy-ws-port=N.)
+//   - Per-second FPS is logged. When the page sends a control-channel
+//     `done:video=...,audio=...,dt_ms=...` message, the receiver emits
+//     a `FINAL_STATS:` line that out-of-process tests assert on.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <mfapi.h>
+#pragma comment(lib, "mfplat.lib")
 
 #include "lumen/signaling/signaling_server.h"
 #include "lumen/signaling/session_config.h"
 #include "common/cert_util.h"
+#include "common/d3d11_device_context.h"
 #include "transport/quiche_server.h"
+#include "codec/mf_video_decoder.h"
+
+#include "frame_reassembler.h"
+#include "lumen/transport/transport_types.h"
+#include "lumen/common/types.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -94,9 +105,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // ── Generate cert + write PEMs ──────────────────────────────────
-    // Chrome's serverCertificateHashes requires validity ≤ 14 days. Pass
-    // 13 to leave margin against rounding / clock skew.
+    // ── Cert + temp PEMs ────────────────────────────────────────────
     auto cert = CreateSelfSignedCert(L"LumenWebReceiverKey",
                                        L"lumen-receiver", 13);
     if (!cert.valid) {
@@ -107,49 +116,133 @@ int main(int argc, char** argv) {
     const std::string key_pem  = TempFile("lkey");
     if (!WriteCertAndKeyPemFiles(cert, cert_pem, key_pem)) {
         std::fprintf(stderr, "WriteCertAndKeyPemFiles failed\n");
-        ReleaseSelfSignedCert(cert);
-        return 1;
+        ReleaseSelfSignedCert(cert); return 1;
     }
     const std::string sha256_hex = Sha256ToHex(cert.sha256_der);
 
-    // ── Start QuicheServer (WebTransport) ───────────────────────────
+    // ── Media Foundation startup (required before any MFT use). ────
+    if (FAILED(MFStartup(MF_VERSION))) {
+        std::fprintf(stderr, "MFStartup failed\n");
+        ReleaseSelfSignedCert(cert);
+        return 1;
+    }
+
+    // ── D3D11 + decoder. Required so received H.264 chunks can be
+    // ── fed to MfVideoDecoder for actual decode (not just counting).
+    auto device_ctx = std::make_unique<D3D11DeviceContext>();
+    bool decoder_ok = false;
+    std::unique_ptr<MfVideoDecoder> decoder;
+    if (auto r = device_ctx->Initialize(0); r.ok()) {
+        decoder = std::make_unique<MfVideoDecoder>(*device_ctx);
+        VideoDecoderConfig dcfg;
+        dcfg.codec = VideoCodec::kH264;
+        dcfg.width = 320;
+        dcfg.height = 240;
+        dcfg.fps = 30;
+        dcfg.low_latency = true;
+        if (auto d = decoder->Initialize(dcfg, device_ctx->Device()); d.ok()) {
+            decoder_ok = true;
+            std::printf("[recv] H.264 decoder ready (320x240@30)\n");
+        } else {
+            std::printf("[recv] H.264 decoder init failed: %s — counting "
+                         "received frames only\n",
+                         d.error().message.c_str());
+        }
+    } else {
+        std::printf("[recv] D3D11 device init failed: %s — counting "
+                     "received frames only\n", r.error().message.c_str());
+    }
+
+    // ── Reassemblers + stats ────────────────────────────────────────
+    FrameReassembler video_ra;
+    FrameReassembler audio_ra;
+    FrameReassembler ctrl_ra;
+
+    std::atomic<uint64_t> video_received{0};
+    std::atomic<uint64_t> video_decoded{0};
+    std::atomic<uint64_t> video_decode_errors{0};
+    std::atomic<uint64_t> video_keyframes{0};
+    std::atomic<uint64_t> video_bytes{0};
+    std::atomic<uint64_t> audio_received{0};
+    std::atomic<uint64_t> audio_bytes{0};
+    auto t_start = std::chrono::steady_clock::now();
+    auto t_first_video = std::chrono::steady_clock::time_point{};
+    std::mutex first_mu;
+
+    video_ra.SetCallback(
+        [&](const uint8_t* data, size_t size, const MediaPacketHeader& h) {
+            video_received.fetch_add(1);
+            video_bytes.fetch_add(size);
+            if (h.IsKeyframe()) video_keyframes.fetch_add(1);
+            {
+                std::lock_guard<std::mutex> lock(first_mu);
+                if (t_first_video == std::chrono::steady_clock::time_point{}) {
+                    t_first_video = std::chrono::steady_clock::now();
+                }
+            }
+            if (decoder_ok) {
+                auto r = decoder->Decode(data, size, h.frame_index);
+                if (r.ok()) {
+                    video_decoded.fetch_add(1);
+                    decoder->ReleaseFrame(r.value());
+                } else if (r.error().code != ErrorCode::kTimeout) {
+                    video_decode_errors.fetch_add(1);
+                }
+            }
+        });
+
+    audio_ra.SetCallback(
+        [&](const uint8_t* /*data*/, size_t size,
+             const MediaPacketHeader& /*h*/) {
+            audio_received.fetch_add(1);
+            audio_bytes.fetch_add(size);
+        });
+
+    std::atomic<bool> got_done{false};
+    std::string done_msg;
+    std::mutex done_mu;
+    ctrl_ra.SetCallback(
+        [&](const uint8_t* data, size_t size, const MediaPacketHeader&) {
+            std::string m(reinterpret_cast<const char*>(data), size);
+            std::lock_guard<std::mutex> lock(done_mu);
+            done_msg = std::move(m);
+            got_done.store(true);
+        });
+
+    // ── QuicheServer ────────────────────────────────────────────────
     QuicheServer wt;
-    QuicheServerConfig wt_cfg;
-    wt_cfg.address = "0.0.0.0";
-    wt_cfg.port    = wt_port;
-    wt_cfg.cert_pem_path = cert_pem;
-    wt_cfg.key_pem_path  = key_pem;
-    if (auto r = wt.Initialize(wt_cfg); !r) {
+    QuicheServerConfig wcfg;
+    wcfg.address = "0.0.0.0";
+    wcfg.port    = wt_port;
+    wcfg.cert_pem_path = cert_pem;
+    wcfg.key_pem_path  = key_pem;
+    if (auto r = wt.Initialize(wcfg); !r) {
         std::fprintf(stderr, "QuicheServer.Initialize failed: %s\n",
                      r.error().message.c_str());
         return 1;
     }
 
-    std::atomic<int> sessions_seen{0};
     wt.SetOnWebTransportSession(
-        [&](const WebTransportSessionInfo& info) {
-            ++sessions_seen;
-            std::printf("[wt] session #%d established path=%s session_id=%llu\n",
-                         sessions_seen.load(), info.path.c_str(),
+        [](const WebTransportSessionInfo& info) {
+            std::printf("[wt] session established path=%s session_id=%llu\n",
+                         info.path.c_str(),
                          (unsigned long long)info.session_id);
             std::fflush(stdout);
         });
 
     wt.SetOnWebTransportDatagram(
-        [&](const std::string& conn_id, uint64_t session_id,
+        [&](const std::string& /*conn_id*/, uint64_t /*session_id*/,
              const uint8_t* data, size_t size) {
-            std::printf("[wt] dgram on session %llu, %zu bytes: \"%.*s\"\n",
-                         (unsigned long long)session_id, size,
-                         static_cast<int>(size), data);
-            std::fflush(stdout);
-
-            // Echo the bytes back with an "echo: " prefix so the test
-            // page can verify the round-trip.
-            std::string out = "echo: ";
-            out.append(reinterpret_cast<const char*>(data), size);
-            wt.SendWebTransportDatagram(conn_id, session_id,
-                                          reinterpret_cast<const uint8_t*>(out.data()),
-                                          out.size());
+            if (size < 1 + 28) return;
+            const uint8_t channel = data[0];
+            const uint8_t* body = data + 1;          // header + payload
+            const size_t   body_size = size - 1;
+            switch (channel) {
+                case 0: video_ra.AddFragment(body, body_size); break;
+                case 1: audio_ra.AddFragment(body, body_size); break;
+                case 2: ctrl_ra.AddFragment(body, body_size); break;
+                default: break;
+            }
         });
 
     if (auto r = wt.Start(); !r) {
@@ -158,12 +251,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── Start SignalingServer with cert hash in the JSON ────────────
+    // ── Signaling ───────────────────────────────────────────────────
     SessionConfig cfg;
     cfg.session_id = "demo";
     cfg.transport.kind = "webtransport";
-    // Use 127.0.0.1 explicitly so Chrome doesn't pick IPv6 ::1 (the
-    // QuicheServer currently binds IPv4 only).
     cfg.transport.url = "https://127.0.0.1:" + std::to_string(wt_port) +
                         "/lumen";
     cfg.transport.ssrc = 0xCAFEBEEF;
@@ -182,7 +273,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::printf("\nLumen web_receiver — WebTransport\n");
+    std::printf("\nLumen web_receiver — WebCodecs WebTransport pipeline\n");
     std::printf("  Signaling   : http://localhost:%u/sender/\n",
                  signal.GetPort());
     std::printf("  Session     : http://localhost:%u/api/session\n",
@@ -190,17 +281,76 @@ int main(int argc, char** argv) {
     std::printf("  WebTransport: https://localhost:%u/lumen\n",
                  wt.GetListenPort());
     std::printf("  Cert SHA-256: %s\n", sha256_hex.c_str());
-    std::printf("  Web root    : %s\n", web_root.c_str());
-    std::printf("\nOpen the signaling URL in Chrome/Edge. Press Ctrl-C "
-                 "to stop.\n\n");
+    std::printf("  Decoder     : %s\n",
+                 decoder_ok ? "MfVideoDecoder H.264" : "(disabled)");
+    std::printf("\nOpen the signaling URL in Chrome/Edge. "
+                 "Press Ctrl-C to stop.\n\n");
     std::fflush(stdout);
 
     SetConsoleCtrlHandler(ConsoleHandler, TRUE);
-    while (!g_stop.load()) std::this_thread::sleep_for(200ms);
 
-    std::printf("Shutting down...\n");
+    // ── Stats heartbeat ─────────────────────────────────────────────
+    auto last_v_recv = uint64_t{0};
+    auto last_v_dec  = uint64_t{0};
+    auto last_a_recv = uint64_t{0};
+    auto last_tick = std::chrono::steady_clock::now();
+    while (!g_stop.load() && !got_done.load()) {
+        std::this_thread::sleep_for(200ms);
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_tick >= 1s) {
+            const auto vr = video_received.load();
+            const auto vd = video_decoded.load();
+            const auto ar = audio_received.load();
+            const double dt = std::chrono::duration<double>(now - last_tick).count();
+            std::printf("[fps] video recv=%llu (+%.1f/s) decoded=%llu "
+                         "(+%.1f/s) audio recv=%llu (+%.1f/s) keyframes=%llu\n",
+                         (unsigned long long)vr,
+                         (vr - last_v_recv) / dt,
+                         (unsigned long long)vd,
+                         (vd - last_v_dec) / dt,
+                         (unsigned long long)ar,
+                         (ar - last_a_recv) / dt,
+                         (unsigned long long)video_keyframes.load());
+            std::fflush(stdout);
+            last_v_recv = vr; last_v_dec = vd; last_a_recv = ar;
+            last_tick = now;
+        }
+    }
+
+    // ── Final report ────────────────────────────────────────────────
+    auto t_end = std::chrono::steady_clock::now();
+    const double dt_total =
+        std::chrono::duration<double>(t_end - t_start).count();
+    const auto vr = video_received.load();
+    const auto vd = video_decoded.load();
+    const auto ar = audio_received.load();
+    const auto ve = video_decode_errors.load();
+    const auto kf = video_keyframes.load();
+    const auto vb = video_bytes.load();
+    const auto ab = audio_bytes.load();
+    {
+        std::lock_guard<std::mutex> lock(done_mu);
+        std::printf("[recv] page reported: %s\n", done_msg.c_str());
+    }
+    std::printf("FINAL_STATS: dt_s=%.3f video_received=%llu video_decoded=%llu "
+                 "video_decode_errors=%llu video_keyframes=%llu video_bytes=%llu "
+                 "audio_received=%llu audio_bytes=%llu "
+                 "video_recv_fps=%.2f video_decode_fps=%.2f audio_pkt_per_s=%.2f\n",
+                 dt_total,
+                 (unsigned long long)vr, (unsigned long long)vd,
+                 (unsigned long long)ve, (unsigned long long)kf,
+                 (unsigned long long)vb,
+                 (unsigned long long)ar, (unsigned long long)ab,
+                 vr / (dt_total > 0.001 ? dt_total : 0.001),
+                 vd / (dt_total > 0.001 ? dt_total : 0.001),
+                 ar / (dt_total > 0.001 ? dt_total : 0.001));
+    std::fflush(stdout);
+
     wt.Shutdown();
     signal.Stop();
+    if (decoder) decoder.reset();
+    if (device_ctx) device_ctx.reset();
+    MFShutdown();
     DeleteFileA(cert_pem.c_str());
     DeleteFileA(key_pem.c_str());
     ReleaseSelfSignedCert(cert);
