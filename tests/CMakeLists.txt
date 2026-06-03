@@ -211,4 +211,18 @@ if(WIN32)
         lumen_platform_windows
         crypt32
     )
+
+    # Native client <-> server loopback over the abstract interfaces (quiche),
+    # restoring the native<->native coverage the old msquic test provided.
+    add_executable(web_transport_client_loopback_test
+        web_transport_client_loopback_test.cpp
+    )
+    target_include_directories(web_transport_client_loopback_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform/windows
+    )
+    target_link_libraries(web_transport_client_loopback_test PRIVATE
+        lumen_platform_windows
+        crypt32
+    )
 endif()

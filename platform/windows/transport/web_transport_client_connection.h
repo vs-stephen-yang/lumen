@@ -12,24 +12,18 @@
 
 namespace lumen {
 
-class QuicheServer;
+class QuicheClient;
 
-/// WebTransport-backed transport connection.
-///
-/// Wraps a single WebTransport session (identified by a QUIC connection id +
-/// HTTP/3 session stream id) hosted by a QuicheServer. Owns three logical
-/// channels (video/audio/control) multiplexed over WT datagrams. Inbound
-/// datagrams carry a leading channel_id byte that selects the channel.
-///
-/// Threading: OnDatagram() fires on the QuicheServer recv thread; receive
-/// callbacks therefore fire on that thread (per the TransportChannel
-/// contract — consumers must not block).
-class WebTransportConnection : public TransportConnection,
-                                public WebTransportDatagramSink {
+/// Client-side WebTransport connection: a single established session over a
+/// QuicheClient, exposing video/audio/control channels behind the abstract
+/// TransportConnection. The mirror image of WebTransportConnection (server
+/// side); both share WebTransportChannel via the WebTransportDatagramSink.
+class WebTransportClientConnection : public TransportConnection,
+                                      public WebTransportDatagramSink {
 public:
-    WebTransportConnection(QuicheServer* server, std::string conn_id,
-                           uint64_t session_id, std::string remote_address);
-    ~WebTransportConnection() override;
+    WebTransportClientConnection(QuicheClient* client, uint64_t session_id,
+                                 std::string remote_address);
+    ~WebTransportClientConnection() override;
 
     // TransportConnection interface
     TransportChannel* GetChannel(ChannelType type) override;
@@ -43,24 +37,20 @@ public:
     void Close() override;
     std::string GetRemoteAddress() const override { return remote_address_; }
 
-    /// Route an inbound WT datagram for this session to the right channel.
-    /// `data` is [channel_id:u8][MediaPacketHeader:28][fragment] (the
-    /// session_id varint has already been stripped by QuicheServer).
-    void OnDatagram(const uint8_t* data, size_t size);
-
-    /// WebTransportDatagramSink: send one fragment (called by a channel).
-    /// `frag` is [MediaPacketHeader:28][fragment]; the channel_id byte is
-    /// prepended here before handing off to the QuicheServer.
+    // WebTransportDatagramSink
     Result<size_t> SendChannelDatagram(ChannelType type, const uint8_t* frag,
                                        size_t size) override;
+
+    /// Route an inbound WT datagram ([channel_id][header][fragment]) to the
+    /// right channel. Called on the QuicheClient recv thread.
+    void OnDatagram(const uint8_t* data, size_t size);
 
     void TransitionState(ConnectionState s);
 
 private:
     WebTransportChannel* ChannelByType(ChannelType type);
 
-    QuicheServer* server_;  // Non-owning.
-    std::string conn_id_;
+    QuicheClient* client_;  // Non-owning.
     uint64_t session_id_;
     std::string remote_address_;
     std::atomic<ConnectionState> state_{ConnectionState::kConnected};

@@ -21,10 +21,13 @@ set(LUMEN_PLATFORM_WIN_SOURCES
     transport/ws_transport_connection.cpp
     transport/ws_transport_server.cpp
     transport/quiche_server.cpp
+    transport/quiche_client.cpp
     transport/wt_varint.cpp
     transport/web_transport_channel.cpp
     transport/web_transport_connection.cpp
     transport/web_transport_server.cpp
+    transport/web_transport_client_connection.cpp
+    transport/web_transport_client.cpp
 )
 
 add_library(lumen_platform_windows STATIC ${LUMEN_PLATFORM_WIN_SOURCES})

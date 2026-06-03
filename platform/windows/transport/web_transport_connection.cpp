@@ -81,9 +81,9 @@ void WebTransportConnection::OnDatagram(const uint8_t* data, size_t size) {
     ch->OnDatagramFragment(data + 1, size - 1);
 }
 
-Result<size_t> WebTransportConnection::SendDatagram(ChannelType type,
-                                                     const uint8_t* frag,
-                                                     size_t size) {
+Result<size_t> WebTransportConnection::SendChannelDatagram(ChannelType type,
+                                                            const uint8_t* frag,
+                                                            size_t size) {
     // Prepend the channel_id byte: [channel_id:u8][MediaPacketHeader:28][frag].
     std::vector<uint8_t> buf(size + 1);
     buf[0] = wire::ChannelIdOf(type);

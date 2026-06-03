@@ -1,16 +1,14 @@
 #include "web_transport_channel.h"
 
-#include "web_transport_connection.h"
-
 #include <cstring>
 #include <vector>
 
 namespace lumen {
 
 WebTransportChannel::WebTransportChannel(ChannelType type,
-                                          WebTransportConnection* connection)
+                                          WebTransportDatagramSink* sink)
     : type_(type),
-      connection_(connection),
+      sink_(sink),
       fragmenter_(kFragmentPayload) {
     switch (type) {
         case ChannelType::kControl: priority_ = SendPriority::kControl;    break;
@@ -49,8 +47,8 @@ Result<size_t> WebTransportChannel::Send(const uint8_t* data, size_t size,
 
     auto fragments = fragmenter_.Fragment(data, size, tmpl);
     for (auto& frag : fragments) {
-        auto r = connection_->SendDatagram(type_, frag.data.data(),
-                                           frag.data.size());
+        auto r = sink_->SendChannelDatagram(type_, frag.data.data(),
+                                            frag.data.size());
         if (!r) return r.error();
     }
     return size;

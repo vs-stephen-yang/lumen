@@ -9,13 +9,25 @@
 
 namespace lumen {
 
-class WebTransportConnection;
+/// Sink a channel uses to ship one fragment. Implemented by both the
+/// server-side and client-side WebTransport connections, so WebTransportChannel
+/// is shared by both. The sink prepends the channel_id byte and hands the
+/// datagram to its QuicheServer/QuicheClient for transmission on the recv
+/// thread.
+class WebTransportDatagramSink {
+public:
+    virtual ~WebTransportDatagramSink() = default;
+    /// `frag` is [MediaPacketHeader:28][fragment]; the sink prepends channel_id.
+    virtual Result<size_t> SendChannelDatagram(ChannelType type,
+                                               const uint8_t* frag,
+                                               size_t size) = 0;
+};
 
 /// WebTransport-backed transport channel (datagram mode).
 ///
 /// Each logical channel (video/audio/control) carries MTU-sized fragments
 /// inside WebTransport datagrams. Wire convention (channel_id is prepended
-/// by the owning WebTransportConnection, not here):
+/// by the owning connection sink, not here):
 ///   WT datagram payload = [channel_id:u8][MediaPacketHeader:28][fragment]
 ///
 /// On receive, fragments are reassembled by an internal FrameReassembler.
@@ -25,7 +37,7 @@ class WebTransportConnection;
 /// frame before the DataReceivedCallback fires.
 class WebTransportChannel : public TransportChannel {
 public:
-    WebTransportChannel(ChannelType type, WebTransportConnection* connection);
+    WebTransportChannel(ChannelType type, WebTransportDatagramSink* sink);
 
     // TransportChannel interface
     Result<size_t> Send(const uint8_t* data, size_t size,
@@ -52,7 +64,7 @@ private:
     static constexpr size_t kFragmentPayload = 1100;
 
     ChannelType type_;
-    WebTransportConnection* connection_;  // Non-owning.
+    WebTransportDatagramSink* sink_;  // Non-owning.
     SendPriority priority_;
 
     FrameFragmenter fragmenter_;
