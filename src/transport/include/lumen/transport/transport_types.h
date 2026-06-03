@@ -85,16 +85,34 @@ struct MediaPacketHeader {
     uint64_t timestamp_us = 0;       // Capture timestamp in microseconds
     uint16_t fragment_index = 0;     // Fragment index within this frame
     uint16_t fragment_count = 0;     // Total fragments in this frame
-    uint32_t flags = 0;              // Bit 0: is_keyframe, Bit 1: is_last_fragment
+    // flags layout (network byte order on the wire):
+    //   bit 0      is_keyframe
+    //   bit 1      is_last_fragment
+    //   bits 2-27  reserved (must be 0)
+    //   bits 28-31 wire-format version (currently 0)
+    // Reserving the version nibble now lets the framing evolve (new fields,
+    // codec tags) without a flag day: receivers can branch on Version().
+    uint32_t flags = 0;
+
+    static constexpr uint32_t kVersionShift = 28;
+    static constexpr uint32_t kVersionMask  = 0xFu << kVersionShift;
+    static constexpr uint8_t  kCurrentVersion = 0;
 
     bool IsKeyframe() const { return (flags & 0x1) != 0; }
     bool IsLastFragment() const { return (flags & 0x2) != 0; }
+    uint8_t Version() const {
+        return static_cast<uint8_t>((flags & kVersionMask) >> kVersionShift);
+    }
 
     void SetKeyframe(bool v) {
         if (v) flags |= 0x1; else flags &= ~0x1u;
     }
     void SetLastFragment(bool v) {
         if (v) flags |= 0x2; else flags &= ~0x2u;
+    }
+    void SetVersion(uint8_t v) {
+        flags = (flags & ~kVersionMask) |
+                ((static_cast<uint32_t>(v) << kVersionShift) & kVersionMask);
     }
 
     static constexpr size_t kSerializedSize = 28;

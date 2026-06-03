@@ -103,6 +103,31 @@ TEST(header_flags_keyframe_and_last_fragment) {
     ASSERT_TRUE(out.IsLastFragment());
 }
 
+TEST(header_version_field) {
+    MediaPacketHeader hdr;
+    ASSERT_EQ(hdr.Version(), 0u);  // default is current version (0)
+
+    hdr.SetVersion(5);
+    hdr.SetKeyframe(true);
+    hdr.SetLastFragment(true);
+
+    uint8_t buf[MediaPacketHeader::kSerializedSize];
+    hdr.Serialize(buf);
+
+    MediaPacketHeader out;
+    ASSERT_TRUE(MediaPacketHeader::Deserialize(buf, sizeof(buf), out));
+    ASSERT_EQ(out.Version(), 5u);
+    // Version bits are independent of the keyframe / last-fragment bits.
+    ASSERT_TRUE(out.IsKeyframe());
+    ASSERT_TRUE(out.IsLastFragment());
+
+    // Clearing the version leaves the low flag bits intact.
+    out.SetVersion(0);
+    ASSERT_EQ(out.Version(), 0u);
+    ASSERT_TRUE(out.IsKeyframe());
+    ASSERT_TRUE(out.IsLastFragment());
+}
+
 TEST(header_deserialize_too_short) {
     uint8_t buf[10] = {};
     MediaPacketHeader out;

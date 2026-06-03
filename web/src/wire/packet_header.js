@@ -9,13 +9,19 @@
 //   [20..21] fragmentIndex   uint16
 //   [22..23] fragmentCount   uint16
 //   [24..27] flags           uint32
-//                              bit 0 = isKeyframe
-//                              bit 1 = isLastFragment
+//                              bit 0      = isKeyframe
+//                              bit 1      = isLastFragment
+//                              bits 2-27  = reserved (must be 0)
+//                              bits 28-31 = wire-format version (currently 0)
 
 export const HEADER_SIZE = 28;
 
 export const FLAG_KEYFRAME = 0x1;
 export const FLAG_LAST_FRAGMENT = 0x2;
+
+export const VERSION_SHIFT = 28;
+export const VERSION_MASK = 0xF << VERSION_SHIFT;  // bits 28-31
+export const CURRENT_VERSION = 0;
 
 const BIG_ENDIAN = false;
 
@@ -39,6 +45,8 @@ export function serializeHeader(buf, hdr) {
     let flags = 0;
     if (hdr.isKeyframe)     flags |= FLAG_KEYFRAME;
     if (hdr.isLastFragment) flags |= FLAG_LAST_FRAGMENT;
+    const version = (hdr.version ?? CURRENT_VERSION) & 0xF;
+    flags |= version << VERSION_SHIFT;
     view.setUint32(24, flags >>> 0, BIG_ENDIAN);
 }
 
@@ -58,5 +66,6 @@ export function deserializeHeader(buf) {
         fragmentCount:  view.getUint16(22, BIG_ENDIAN),
         isKeyframe:     (flags & FLAG_KEYFRAME) !== 0,
         isLastFragment: (flags & FLAG_LAST_FRAGMENT) !== 0,
+        version:        (flags & VERSION_MASK) >>> VERSION_SHIFT,
     };
 }

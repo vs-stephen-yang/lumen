@@ -27,6 +27,7 @@ const GOLDEN_HEADER = {
     fragmentCount:  0x0002,
     isKeyframe:     true,
     isLastFragment: true,
+    version:        0,
 };
 
 const GOLDEN_BYTES = new Uint8Array([
@@ -70,6 +71,26 @@ describe('MediaPacketHeader wire format', () => {
         serializeHeader(buf, { ...GOLDEN_HEADER,
                                isKeyframe: false, isLastFragment: false });
         expect(buf[27]).toBe(0);
+    });
+
+    it('round-trips the version nibble (flags bits 28-31)', () => {
+        const buf = new Uint8Array(HEADER_SIZE);
+        serializeHeader(buf, { ...GOLDEN_HEADER, version: 5 });
+        // Version occupies the top nibble of the flags word (byte 24).
+        expect(buf[24]).toBe(0x50);
+        // Low flag byte still carries keyframe + last-fragment.
+        expect(buf[27]).toBe(FLAG_KEYFRAME | FLAG_LAST_FRAGMENT);
+        const decoded = deserializeHeader(buf);
+        expect(decoded.version).toBe(5);
+        expect(decoded.isKeyframe).toBe(true);
+        expect(decoded.isLastFragment).toBe(true);
+    });
+
+    it('defaults version to 0 when omitted', () => {
+        const buf = new Uint8Array(HEADER_SIZE);
+        const { version, ...noVersion } = GOLDEN_HEADER;
+        serializeHeader(buf, noVersion);
+        expect(deserializeHeader(buf).version).toBe(0);
     });
 
     it('accepts plain Number for uint64 fields', () => {
