@@ -197,19 +197,18 @@ if(WIN32)
         lumen_platform_windows
     )
 
-    # QUIC transport integration test (requires msquic).
-    if(LUMEN_HAS_QUIC)
-        add_executable(transport_quic_test
-            transport_quic_test.cpp
-        )
-        target_include_directories(transport_quic_test PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}
-            ${CMAKE_CURRENT_SOURCE_DIR}/mocks
-            ${CMAKE_SOURCE_DIR}/platform/windows
-        )
-        target_link_libraries(transport_quic_test PRIVATE
-            lumen_platform_windows
-            crypt32
-        )
-    endif()
+    # WebTransport adapter loopback test: a quiche client drives datagrams
+    # through WebTransportServer and asserts the channel receive callbacks
+    # deliver correctly reassembled [header][frame] data.
+    add_executable(web_transport_adapter_test
+        web_transport_adapter_test.cpp
+    )
+    target_include_directories(web_transport_adapter_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform/windows
+    )
+    target_link_libraries(web_transport_adapter_test PRIVATE
+        lumen_platform_windows
+        crypt32
+    )
 endif()

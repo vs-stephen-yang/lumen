@@ -182,7 +182,7 @@ SelfSignedCert CreateSelfSignedCert(const std::wstring& key_name,
     }
 
     result.context = store_cert;
-    std::memcpy(result.sha1_thumbprint.ShaHash, sha1, 20);
+    std::memcpy(result.sha1_thumbprint.data(), sha1, 20);
     std::memcpy(result.sha256_der.data(), sha256, 32);
     result.valid = true;
     return result;

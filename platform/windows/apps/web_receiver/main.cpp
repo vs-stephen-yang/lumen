@@ -7,13 +7,15 @@
 //     via /api/session so the browser pins it via
 //     `new WebTransport(url, { serverCertificateHashes: [...] })`.
 //
-//   - QuicheServer hosts the WebTransport endpoint on udp/<wt-port>.
+//   - WebTransportServer (the abstract TransportServer backed by quiche)
+//     hosts the WebTransport endpoint on udp/<wt-port> and surfaces each
+//     session as a TransportConnection with video/audio/control channels.
 //
 //   - Each WT datagram payload is `[channel_id:u8][MediaPacketHeader:28]
-//     [fragment payload]`. Fragments are reassembled via FrameReassembler
-//     (one per channel). Reassembled video frames are fed to
-//     MfVideoDecoder; audio packets are counted (Opus decode is left
-//     as a follow-up).
+//     [fragment payload]`. The adapter reassembles fragments per channel and
+//     delivers `[MediaPacketHeader:28][frame]` via each channel's receive
+//     callback. Reassembled video frames are fed to MfVideoDecoder; audio
+//     packets are counted (Opus decode is left as a follow-up).
 //
 //   - Per-second FPS is logged. When the page sends a control-channel
 //     `done:video=...,audio=...,dt_ms=...` message, the receiver emits
@@ -30,10 +32,10 @@
 #include "lumen/signaling/session_config.h"
 #include "common/cert_util.h"
 #include "common/d3d11_device_context.h"
-#include "transport/quiche_server.h"
+#include "transport/web_transport_server.h"
+#include "transport/web_transport_connection.h"
 #include "codec/mf_video_decoder.h"
 
-#include "frame_reassembler.h"
 #include "lumen/transport/transport_types.h"
 #include "lumen/common/types.h"
 
@@ -153,11 +155,7 @@ int main(int argc, char** argv) {
                      "received frames only\n", r.error().message.c_str());
     }
 
-    // ── Reassemblers + stats ────────────────────────────────────────
-    FrameReassembler video_ra;
-    FrameReassembler audio_ra;
-    FrameReassembler ctrl_ra;
-
+    // ── Stats ───────────────────────────────────────────────────────
     std::atomic<uint64_t> video_received{0};
     std::atomic<uint64_t> video_decoded{0};
     std::atomic<uint64_t> video_decode_errors{0};
@@ -169,84 +167,89 @@ int main(int argc, char** argv) {
     auto t_first_video = std::chrono::steady_clock::time_point{};
     std::mutex first_mu;
 
-    video_ra.SetCallback(
-        [&](const uint8_t* data, size_t size, const MediaPacketHeader& h) {
-            video_received.fetch_add(1);
-            video_bytes.fetch_add(size);
-            if (h.IsKeyframe()) video_keyframes.fetch_add(1);
-            {
-                std::lock_guard<std::mutex> lock(first_mu);
-                if (t_first_video == std::chrono::steady_clock::time_point{}) {
-                    t_first_video = std::chrono::steady_clock::now();
-                }
-            }
-            if (decoder_ok) {
-                auto r = decoder->Decode(data, size, h.frame_index);
-                if (r.ok()) {
-                    video_decoded.fetch_add(1);
-                    decoder->ReleaseFrame(r.value());
-                } else if (r.error().code != ErrorCode::kTimeout) {
-                    video_decode_errors.fetch_add(1);
-                }
-            }
-        });
-
-    audio_ra.SetCallback(
-        [&](const uint8_t* /*data*/, size_t size,
-             const MediaPacketHeader& /*h*/) {
-            audio_received.fetch_add(1);
-            audio_bytes.fetch_add(size);
-        });
-
     std::atomic<bool> got_done{false};
     std::string done_msg;
     std::mutex done_mu;
-    ctrl_ra.SetCallback(
-        [&](const uint8_t* data, size_t size, const MediaPacketHeader&) {
-            std::string m(reinterpret_cast<const char*>(data), size);
-            std::lock_guard<std::mutex> lock(done_mu);
-            done_msg = std::move(m);
-            got_done.store(true);
-        });
 
-    // ── QuicheServer ────────────────────────────────────────────────
-    QuicheServer wt;
-    QuicheServerConfig wcfg;
-    wcfg.address = "0.0.0.0";
-    wcfg.port    = wt_port;
-    wcfg.cert_pem_path = cert_pem;
-    wcfg.key_pem_path  = key_pem;
-    if (auto r = wt.Initialize(wcfg); !r) {
-        std::fprintf(stderr, "QuicheServer.Initialize failed: %s\n",
+    // Channel receive callbacks. Each fires on the WebTransport recv thread
+    // with [MediaPacketHeader:28][frame] — the adapter re-prepends the
+    // 28-byte header onto the reassembled frame, so we parse it here.
+    auto on_video = [&](const uint8_t* data, size_t size) {
+        if (size < MediaPacketHeader::kSerializedSize) return;
+        MediaPacketHeader h;
+        MediaPacketHeader::Deserialize(data, size, h);
+        const uint8_t* frame = data + MediaPacketHeader::kSerializedSize;
+        const size_t frame_size = size - MediaPacketHeader::kSerializedSize;
+
+        video_received.fetch_add(1);
+        video_bytes.fetch_add(frame_size);
+        if (h.IsKeyframe()) video_keyframes.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> lock(first_mu);
+            if (t_first_video == std::chrono::steady_clock::time_point{}) {
+                t_first_video = std::chrono::steady_clock::now();
+            }
+        }
+        if (decoder_ok) {
+            auto r = decoder->Decode(frame, frame_size, h.frame_index);
+            if (r.ok()) {
+                video_decoded.fetch_add(1);
+                decoder->ReleaseFrame(r.value());
+            } else if (r.error().code != ErrorCode::kTimeout) {
+                video_decode_errors.fetch_add(1);
+            }
+        }
+    };
+
+    auto on_audio = [&](const uint8_t* data, size_t size) {
+        if (size < MediaPacketHeader::kSerializedSize) return;
+        audio_received.fetch_add(1);
+        audio_bytes.fetch_add(size - MediaPacketHeader::kSerializedSize);
+    };
+
+    auto on_control = [&](const uint8_t* data, size_t size) {
+        if (size < MediaPacketHeader::kSerializedSize) return;
+        const char* msg = reinterpret_cast<const char*>(
+            data + MediaPacketHeader::kSerializedSize);
+        const size_t msg_size = size - MediaPacketHeader::kSerializedSize;
+        std::lock_guard<std::mutex> lock(done_mu);
+        done_msg.assign(msg, msg_size);
+        got_done.store(true);
+    };
+
+    // ── WebTransport server (quiche behind the abstract interface) ──
+    WebTransportServer wt_server;
+    std::shared_ptr<TransportConnection> wt_conn;
+    std::mutex conn_mu;
+
+    TransportConfig tcfg;
+    tcfg.address       = "0.0.0.0";
+    tcfg.port          = wt_port;
+    tcfg.tls.cert_path = cert_pem;
+    tcfg.tls.key_path  = key_pem;
+
+    if (auto r = wt_server.Initialize(tcfg); !r) {
+        std::fprintf(stderr, "WebTransportServer.Initialize failed: %s\n",
                      r.error().message.c_str());
         return 1;
     }
 
-    wt.SetOnWebTransportSession(
-        [](const WebTransportSessionInfo& info) {
-            std::printf("[wt] session established path=%s session_id=%llu\n",
-                         info.path.c_str(),
-                         (unsigned long long)info.session_id);
-            std::fflush(stdout);
-        });
+    auto incoming = [&](std::shared_ptr<TransportConnection> conn) {
+        std::printf("[wt] session established remote=%s\n",
+                     conn->GetRemoteAddress().c_str());
+        std::fflush(stdout);
+        if (auto* ch = conn->GetChannel(ChannelType::kVideo))
+            ch->SetReceiveCallback(on_video);
+        if (auto* ch = conn->GetChannel(ChannelType::kAudio))
+            ch->SetReceiveCallback(on_audio);
+        if (auto* ch = conn->GetChannel(ChannelType::kControl))
+            ch->SetReceiveCallback(on_control);
+        std::lock_guard<std::mutex> lock(conn_mu);
+        wt_conn = std::move(conn);
+    };
 
-    wt.SetOnWebTransportDatagram(
-        [&](const std::string& /*conn_id*/, uint64_t /*session_id*/,
-             const uint8_t* data, size_t size) {
-            if (size < 1 + 28) return;
-            const uint8_t channel = data[0];
-            const uint8_t* body = data + 1;          // header + payload
-            const size_t   body_size = size - 1;
-            switch (channel) {
-                case 0: video_ra.AddFragment(body, body_size); break;
-                case 1: audio_ra.AddFragment(body, body_size); break;
-                case 2: ctrl_ra.AddFragment(body, body_size); break;
-                default: break;
-            }
-        });
-
-    if (auto r = wt.Start(); !r) {
-        std::fprintf(stderr, "QuicheServer.Start failed: %s\n",
+    if (auto r = wt_server.Start(incoming); !r) {
+        std::fprintf(stderr, "WebTransportServer.Start failed: %s\n",
                      r.error().message.c_str());
         return 1;
     }
@@ -279,7 +282,7 @@ int main(int argc, char** argv) {
     std::printf("  Session     : http://localhost:%u/api/session\n",
                  signal.GetPort());
     std::printf("  WebTransport: https://localhost:%u/lumen\n",
-                 wt.GetListenPort());
+                 wt_server.GetListenPort());
     std::printf("  Cert SHA-256: %s\n", sha256_hex.c_str());
     std::printf("  Decoder     : %s\n",
                  decoder_ok ? "MfVideoDecoder H.264" : "(disabled)");
@@ -346,7 +349,7 @@ int main(int argc, char** argv) {
                  ar / (dt_total > 0.001 ? dt_total : 0.001));
     std::fflush(stdout);
 
-    wt.Shutdown();
+    wt_server.Shutdown();
     signal.Stop();
     if (decoder) decoder.reset();
     if (device_ctx) device_ctx.reset();

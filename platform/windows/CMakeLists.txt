@@ -22,25 +22,10 @@ set(LUMEN_PLATFORM_WIN_SOURCES
     transport/ws_transport_server.cpp
     transport/quiche_server.cpp
     transport/wt_varint.cpp
+    transport/web_transport_channel.cpp
+    transport/web_transport_connection.cpp
+    transport/web_transport_server.cpp
 )
-
-# Native-only QUIC transport (msquic, Schannel TLS). Used for native↔native
-# scenarios; the browser-facing WebTransport path uses quiche, which is
-# wired in separately.
-find_package(msquic CONFIG QUIET)
-if(msquic_FOUND)
-    list(APPEND LUMEN_PLATFORM_WIN_SOURCES
-        transport/quic_channel.cpp
-        transport/quic_transport_connection.cpp
-        transport/quic_transport_client.cpp
-        transport/quic_transport_server.cpp
-    )
-    set(LUMEN_HAS_QUIC ON CACHE INTERNAL "")
-    message(STATUS "msquic found — building native QUIC transport backend")
-else()
-    set(LUMEN_HAS_QUIC OFF CACHE INTERNAL "")
-    message(STATUS "msquic not found — skipping native QUIC transport")
-endif()
 
 add_library(lumen_platform_windows STATIC ${LUMEN_PLATFORM_WIN_SOURCES})
 
@@ -69,10 +54,5 @@ target_link_libraries(lumen_platform_windows
     PUBLIC quiche
     PRIVATE crypt32 ncrypt
 )
-
-if(LUMEN_HAS_QUIC)
-    target_link_libraries(lumen_platform_windows PUBLIC msquic ntdll)
-    target_compile_definitions(lumen_platform_windows PUBLIC LUMEN_HAS_QUIC=1)
-endif()
 
 add_subdirectory(apps/web_receiver)
