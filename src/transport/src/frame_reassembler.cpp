@@ -6,11 +6,31 @@
 
 namespace lumen {
 
-FrameReassembler::FrameReassembler(uint64_t timeout_us)
-    : timeout_us_(timeout_us) {}
+FrameReassembler::FrameReassembler(uint64_t timeout_us, size_t max_pending)
+    : timeout_us_(timeout_us),
+      max_pending_(max_pending == 0 ? 1 : max_pending) {}
 
 uint64_t FrameReassembler::MakeKey(uint32_t ssrc, uint64_t frame_index) {
     return (static_cast<uint64_t>(ssrc) << 32) ^ frame_index;
+}
+
+uint64_t FrameReassembler::NowUs() {
+    auto now = std::chrono::steady_clock::now();
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            now.time_since_epoch())
+            .count());
+}
+
+void FrameReassembler::EvictOldest() {
+    auto oldest = pending_.end();
+    for (auto it = pending_.begin(); it != pending_.end(); ++it) {
+        if (oldest == pending_.end() ||
+            it->second.first_arrival_us < oldest->second.first_arrival_us) {
+            oldest = it;
+        }
+    }
+    if (oldest != pending_.end()) pending_.erase(oldest);
 }
 
 void FrameReassembler::AddFragment(const uint8_t* packet_data,
@@ -27,18 +47,22 @@ void FrameReassembler::AddFragment(const uint8_t* packet_data,
 
     const uint64_t key = MakeKey(hdr.ssrc, hdr.frame_index);
 
-    auto& pending = pending_[key];
-    if (pending.fragment_count == 0) {
-        // First fragment for this frame.
-        pending.fragment_count = hdr.fragment_count;
-        pending.fragments.resize(hdr.fragment_count);
-        pending.first_header = hdr;
-        auto now = std::chrono::steady_clock::now();
-        pending.first_arrival_us = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                now.time_since_epoch())
-                .count());
+    auto it = pending_.find(key);
+    if (it == pending_.end()) {
+        // First fragment for this frame. Bound memory before inserting:
+        // purge timed-out frames, then evict the oldest if still at capacity.
+        const uint64_t now_us = NowUs();
+        PurgeStale(now_us);
+        if (pending_.size() >= max_pending_) EvictOldest();
+
+        it = pending_.emplace(key, PendingFrame{}).first;
+        PendingFrame& fresh = it->second;
+        fresh.fragment_count = hdr.fragment_count;
+        fresh.fragments.resize(hdr.fragment_count);
+        fresh.first_header = hdr;
+        fresh.first_arrival_us = now_us;
     }
+    PendingFrame& pending = it->second;
 
     // Ignore duplicate fragments.
     if (!pending.fragments[hdr.fragment_index].empty()) return;

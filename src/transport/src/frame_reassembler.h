@@ -16,10 +16,18 @@ using ReassembledFrameCallback =
                        const MediaPacketHeader& header)>;
 
 /// Collects fragments and reassembles complete frames.
+///
+/// Self-bounding: on each new frame it purges entries older than the timeout
+/// and, if still at capacity, evicts the oldest pending frame. This keeps
+/// `pending_` from growing without bound when fed by a lossy datagram source
+/// (where incomplete frames are the norm), so callers need no external timer.
 class FrameReassembler {
 public:
-    /// @param timeout_us Discard incomplete frames older than this (microseconds).
-    explicit FrameReassembler(uint64_t timeout_us = 500'000);
+    /// @param timeout_us   Discard incomplete frames older than this (microseconds).
+    /// @param max_pending  Hard cap on concurrently buffered incomplete frames;
+    ///                     the oldest is evicted when a new frame would exceed it.
+    explicit FrameReassembler(uint64_t timeout_us = 500'000,
+                              size_t max_pending = 256);
 
     /// Add a fragment (raw packet: header + payload).
     /// Fires the callback if this completes a frame.
@@ -44,7 +52,14 @@ private:
     /// Key combining ssrc and frame_index for deduplication.
     static uint64_t MakeKey(uint32_t ssrc, uint64_t frame_index);
 
+    /// Current steady-clock time in microseconds (matches first_arrival_us).
+    static uint64_t NowUs();
+
+    /// Drop the pending frame with the earliest first-fragment arrival.
+    void EvictOldest();
+
     uint64_t timeout_us_;
+    size_t max_pending_;
     std::unordered_map<uint64_t, PendingFrame> pending_;
     ReassembledFrameCallback callback_;
 };
