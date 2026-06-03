@@ -41,9 +41,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -171,6 +173,48 @@ int main(int argc, char** argv) {
     std::string done_msg;
     std::mutex done_mu;
 
+    // ── Decode worker ───────────────────────────────────────────────
+    // Decode must not run on the WebTransport recv thread — a synchronous
+    // Decode there would stall QUIC packet processing (head-of-line blocking
+    // on the transport). Hand frames to a dedicated decode thread via a
+    // bounded queue; under overload we drop the oldest frame rather than
+    // back up the transport.
+    struct DecodeJob {
+        std::vector<uint8_t> frame;
+        uint64_t frame_index = 0;
+    };
+    std::deque<DecodeJob> decode_q;
+    std::mutex decode_mu;
+    std::condition_variable decode_cv;
+    bool decode_stop = false;
+    constexpr size_t kDecodeQueueMax = 64;
+
+    std::thread decode_thread;
+    if (decoder_ok) {
+        decode_thread = std::thread([&] {
+            for (;;) {
+                DecodeJob job;
+                {
+                    std::unique_lock<std::mutex> lock(decode_mu);
+                    decode_cv.wait(lock, [&] {
+                        return decode_stop || !decode_q.empty();
+                    });
+                    if (decode_q.empty()) return;  // stop requested, drained
+                    job = std::move(decode_q.front());
+                    decode_q.pop_front();
+                }
+                auto r = decoder->Decode(job.frame.data(), job.frame.size(),
+                                         job.frame_index);
+                if (r.ok()) {
+                    video_decoded.fetch_add(1);
+                    decoder->ReleaseFrame(r.value());
+                } else if (r.error().code != ErrorCode::kTimeout) {
+                    video_decode_errors.fetch_add(1);
+                }
+            }
+        });
+    }
+
     // Channel receive callbacks. Each fires on the WebTransport recv thread
     // with [MediaPacketHeader:28][frame] — the adapter re-prepends the
     // 28-byte header onto the reassembled frame, so we parse it here.
@@ -190,15 +234,19 @@ int main(int argc, char** argv) {
                 t_first_video = std::chrono::steady_clock::now();
             }
         }
-        if (decoder_ok) {
-            auto r = decoder->Decode(frame, frame_size, h.frame_index);
-            if (r.ok()) {
-                video_decoded.fetch_add(1);
-                decoder->ReleaseFrame(r.value());
-            } else if (r.error().code != ErrorCode::kTimeout) {
-                video_decode_errors.fetch_add(1);
+        if (!decoder_ok) return;
+        // Hand off to the decode thread — never decode on the recv thread.
+        DecodeJob job;
+        job.frame.assign(frame, frame + frame_size);
+        job.frame_index = h.frame_index;
+        {
+            std::lock_guard<std::mutex> lock(decode_mu);
+            if (decode_q.size() >= kDecodeQueueMax) {
+                decode_q.pop_front();  // drop oldest under overload
             }
+            decode_q.push_back(std::move(job));
         }
+        decode_cv.notify_one();
     };
 
     auto on_audio = [&](const uint8_t* data, size_t size) {
@@ -318,6 +366,17 @@ int main(int argc, char** argv) {
             last_v_recv = vr; last_v_dec = vd; last_a_recv = ar;
             last_tick = now;
         }
+    }
+
+    // Drain and stop the decode worker so video_decoded is final before the
+    // report below.
+    if (decode_thread.joinable()) {
+        {
+            std::lock_guard<std::mutex> lock(decode_mu);
+            decode_stop = true;
+        }
+        decode_cv.notify_one();
+        decode_thread.join();
     }
 
     // ── Final report ────────────────────────────────────────────────
