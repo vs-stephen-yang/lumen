@@ -1,5 +1,7 @@
 #include "tcp_transport_connection.h"
 
+#include "lumen/transport/wire_format.h"
+
 #include <algorithm>
 #include <cstring>
 
@@ -155,7 +157,9 @@ void TcpTransportConnection::SetState(ConnectionState state) {
 }
 
 TcpTransportChannel* TcpTransportConnection::ChannelById(uint8_t id) {
-    switch (static_cast<ChannelType>(id)) {
+    ChannelType type;
+    if (!wire::ChannelTypeOf(id, type)) return nullptr;
+    switch (type) {
         case ChannelType::kVideo:   return video_channel_.get();
         case ChannelType::kAudio:   return audio_channel_.get();
         case ChannelType::kControl: return control_channel_.get();

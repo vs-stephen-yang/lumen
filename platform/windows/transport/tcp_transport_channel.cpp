@@ -1,6 +1,8 @@
 #include "tcp_transport_channel.h"
 #include "tcp_transport_connection.h"
 
+#include "lumen/transport/wire_format.h"
+
 #include <cstring>
 
 namespace lumen {
@@ -52,7 +54,7 @@ Result<size_t> TcpTransportChannel::Send(const uint8_t* data, size_t size,
     }
 
     size_t total_size = payload.size();
-    if (!connection_->EnqueueSend(static_cast<uint8_t>(type_),
+    if (!connection_->EnqueueSend(wire::ChannelIdOf(type_),
                                    std::move(payload), prio)) {
         return Error::Make(ErrorCode::kTransportChannelFull);
     }

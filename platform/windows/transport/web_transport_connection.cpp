@@ -1,6 +1,7 @@
 #include "web_transport_connection.h"
 
 #include "quiche_server.h"
+#include "lumen/transport/wire_format.h"
 
 #include <cstring>
 #include <vector>
@@ -73,7 +74,8 @@ void WebTransportConnection::Close() {
 
 void WebTransportConnection::OnDatagram(const uint8_t* data, size_t size) {
     if (size < 1) return;
-    const auto channel_id = static_cast<ChannelType>(data[0]);
+    ChannelType channel_id;
+    if (!wire::ChannelTypeOf(data[0], channel_id)) return;
     auto* ch = ChannelByType(channel_id);
     if (!ch) return;
     ch->OnDatagramFragment(data + 1, size - 1);
@@ -84,7 +86,7 @@ Result<size_t> WebTransportConnection::SendDatagram(ChannelType type,
                                                      size_t size) {
     // Prepend the channel_id byte: [channel_id:u8][MediaPacketHeader:28][frag].
     std::vector<uint8_t> buf(size + 1);
-    buf[0] = static_cast<uint8_t>(type);
+    buf[0] = wire::ChannelIdOf(type);
     if (size) std::memcpy(buf.data() + 1, frag, size);
 
     auto r = server_->SendWebTransportDatagram(conn_id_, session_id_,

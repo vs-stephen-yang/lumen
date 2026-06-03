@@ -35,9 +35,11 @@
     const MAX_PAYLOAD = 1100;       // keep under WT datagram MTU (~1.2KB)
     const SSRC_VIDEO  = 0x10000001;
     const SSRC_AUDIO  = 0x10000002;
-    const CHAN_VIDEO  = 0;          // ChannelType::kVideo
-    const CHAN_AUDIO  = 1;          // ChannelType::kAudio
-    const CHAN_CTRL   = 2;          // ChannelType::kControl
+    // Canonical channel ids — must match wire::kChannel* in
+    // src/transport/include/lumen/transport/wire_format.h
+    const CHAN_VIDEO  = 0;
+    const CHAN_AUDIO  = 1;
+    const CHAN_CTRL   = 2;
 
     function setBigU64(view, off, v) {
         view.setBigUint64(off, typeof v === 'bigint' ? v : BigInt(v), false);

@@ -1,6 +1,7 @@
 #include "ws_transport_connection.h"
 
 #include "ws_frame_codec.h"
+#include "lumen/transport/wire_format.h"
 
 #include <algorithm>
 #include <cstring>
@@ -68,7 +69,7 @@ Result<size_t> WsTransportConnection::SendBinaryFromChannel(
 
     // Single contiguous buffer: [channel_id:u8][payload]
     std::vector<uint8_t> body(size + 1);
-    body[0] = static_cast<uint8_t>(channel);
+    body[0] = wire::ChannelIdOf(channel);
     if (size > 0) std::memcpy(body.data() + 1, data, size);
 
     auto frame = WriteFrame(WsOpcode::kBinary, body.data(), body.size(),
@@ -136,7 +137,8 @@ void WsTransportConnection::TransitionState(ConnectionState s) {
 
 void WsTransportConnection::DispatchBinary(const uint8_t* data, size_t size) {
     if (size == 0) return;
-    const auto channel_id = static_cast<ChannelType>(data[0]);
+    ChannelType channel_id;
+    if (!wire::ChannelTypeOf(data[0], channel_id)) return;
     const uint8_t* payload = data + 1;
     const size_t payload_size = size - 1;
 
