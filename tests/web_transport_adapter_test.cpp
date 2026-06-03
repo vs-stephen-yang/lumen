@@ -106,6 +106,7 @@ void test_adapter_datagram_reassembly() {
                 got_frame.store(true);
             });
         }
+        std::lock_guard<std::mutex> lock(rmu);
         keep = std::move(conn);
     };
 
@@ -266,9 +267,11 @@ void test_adapter_datagram_reassembly() {
     CHECK(got_frame.load(), "adapter never delivered the reassembled frame");
 
     std::vector<uint8_t> delivered;
+    std::shared_ptr<TransportConnection> conn_for_stats;
     {
         std::lock_guard<std::mutex> lock(rmu);
         delivered = recv_buf;
+        conn_for_stats = keep;
     }
     CHECK(delivered.size() == MediaPacketHeader::kSerializedSize + frame.size(),
           "delivered size mismatch");
@@ -287,6 +290,16 @@ void test_adapter_datagram_reassembly() {
                 "frame_index=%llu keyframe=%d\n",
                 frame.size(), (unsigned long long)got.frame_index,
                 got.IsKeyframe());
+
+    // Stats snapshot should be wired through the abstract interface (#6):
+    // the server received our CONNECT + datagrams, so bytes_received > 0.
+    CHECK(conn_for_stats != nullptr, "no connection handle for stats");
+    TransportStats st = conn_for_stats->GetStats();
+    CHECK(st.bytes_received > 0, "GetStats reported zero bytes_received");
+    std::printf("[adapter] stats: rtt_us=%llu bytes_received=%llu cwnd=%llu\n",
+                (unsigned long long)st.rtt_us,
+                (unsigned long long)st.bytes_received,
+                (unsigned long long)st.congestion_window);
 
     quiche_h3_conn_free(h3);
     quiche_conn_free(qc);

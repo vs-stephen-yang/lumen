@@ -55,6 +55,10 @@ struct QuicheServer::Connection {
     // principle, though typical apps use one.
     std::unordered_set<uint64_t> wt_sessions;
 
+    // Latest stats snapshot, refreshed on the recv thread (FlushEgress) and
+    // read under QuicheServer::stats_mu_ by GetConnectionStats.
+    TransportStats stats;
+
     ~Connection() {
         if (h3) quiche_h3_conn_free(h3);
         if (qc) quiche_conn_free(qc);
@@ -278,19 +282,16 @@ Result<void> QuicheServer::SendWebTransportDatagram(
     const std::string& conn_id, uint64_t session_id,
     const uint8_t* data, size_t size) {
 
-    Connection* conn = nullptr;
+    // Verify the connection exists. The conns_ map is only mutated on the
+    // recv thread under conns_mu_, so this lookup is safe from any thread.
+    // The session and the actual quiche_conn write happen on the recv thread
+    // (DrainSendQueue) — we never touch quiche_conn from here.
     {
         std::lock_guard<std::mutex> lock(conns_mu_);
-        auto it = conns_.find(conn_id);
-        if (it == conns_.end()) {
+        if (conns_.find(conn_id) == conns_.end()) {
             return Error::Make(ErrorCode::kTransportNotConnected,
                                 "no such conn_id");
         }
-        if (it->second->wt_sessions.count(session_id) == 0) {
-            return Error::Make(ErrorCode::kTransportNotConnected,
-                                "session not established");
-        }
-        conn = it->second.get();
     }
 
     uint8_t prefix[8];
@@ -299,19 +300,82 @@ Result<void> QuicheServer::SendWebTransportDatagram(
         return Error::Make(ErrorCode::kInvalidArgument, "session_id too big");
     }
 
-    std::vector<uint8_t> buf(prefix_len + size);
-    std::memcpy(buf.data(), prefix, prefix_len);
-    if (size) std::memcpy(buf.data() + prefix_len, data, size);
+    PendingSend ps;
+    ps.conn_id = conn_id;
+    ps.session_id = session_id;
+    ps.payload.resize(prefix_len + size);
+    std::memcpy(ps.payload.data(), prefix, prefix_len);
+    if (size) std::memcpy(ps.payload.data() + prefix_len, data, size);
 
-    ssize_t rc = quiche_conn_dgram_send(conn->qc, buf.data(), buf.size());
-    if (rc < 0) {
-        return Error::Make(ErrorCode::kTransportError,
-                            "quiche_conn_dgram_send rc=" +
-                                std::to_string(rc));
+    {
+        std::lock_guard<std::mutex> lock(send_mu_);
+        send_q_.push_back(std::move(ps));
     }
-    // Egress will flush from the recv thread on the next iteration; we
-    // also kick a flush here for snappier sends.
-    FlushEgress(conn);
+    return {};
+}
+
+void QuicheServer::DrainSendQueue() {
+    std::vector<PendingSend> batch;
+    {
+        std::lock_guard<std::mutex> lock(send_mu_);
+        if (send_q_.empty()) return;
+        batch.swap(send_q_);
+    }
+
+    std::unordered_set<Connection*> touched;
+    {
+        std::lock_guard<std::mutex> lock(conns_mu_);
+        for (auto& ps : batch) {
+            auto it = conns_.find(ps.conn_id);
+            if (it == conns_.end()) continue;            // connection gone
+            Connection* c = it->second.get();
+            if (c->wt_sessions.count(ps.session_id) == 0) continue;  // no session
+            (void)quiche_conn_dgram_send(c->qc, ps.payload.data(),
+                                          ps.payload.size());
+            touched.insert(c);
+        }
+    }
+    // Flush outside conns_mu_ (same pattern as OnTimers). Single-threaded with
+    // the rest of the recv loop, so the pointers remain valid.
+    for (Connection* c : touched) FlushEgress(c);
+}
+
+void QuicheServer::UpdateStats(Connection* conn) {
+    quiche_stats cs;
+    std::memset(&cs, 0, sizeof(cs));
+    quiche_conn_stats(conn->qc, &cs);
+
+    quiche_path_stats ps;
+    std::memset(&ps, 0, sizeof(ps));
+    const bool have_path = quiche_conn_path_stats(conn->qc, 0, &ps) == 0;
+
+    TransportStats t;
+    t.bytes_sent = cs.sent_bytes;
+    t.bytes_received = cs.recv_bytes;
+    if (cs.sent > 0) {
+        t.loss_rate =
+            static_cast<double>(cs.lost) / static_cast<double>(cs.sent);
+    }
+    if (have_path) {
+        t.rtt_us = ps.rtt / 1000;            // ns → µs
+        t.rtt_variance_us = ps.rttvar / 1000;
+        t.bandwidth_estimate_bps = ps.delivery_rate * 8;  // bytes/s → bits/s
+        t.congestion_window = ps.cwnd;
+    }
+
+    std::lock_guard<std::mutex> lock(stats_mu_);
+    conn->stats = t;
+}
+
+Result<void> QuicheServer::GetConnectionStats(const std::string& conn_id,
+                                               TransportStats& out) const {
+    std::lock_guard<std::mutex> lock(conns_mu_);
+    auto it = conns_.find(conn_id);
+    if (it == conns_.end()) {
+        return Error::Make(ErrorCode::kTransportNotConnected, "no such conn_id");
+    }
+    std::lock_guard<std::mutex> slock(stats_mu_);
+    out = it->second->stats;
     return {};
 }
 
@@ -344,6 +408,7 @@ void QuicheServer::RecvLoop() {
                          static_cast<socklen_t>(peer_len));
         }
 
+        DrainSendQueue();
         OnTimers();
         GcClosed();
     }
@@ -553,6 +618,9 @@ void QuicheServer::FlushEgress(Connection* conn) {
         conn->next_timeout = std::chrono::steady_clock::now() +
                              std::chrono::nanoseconds(ns);
     }
+
+    // Refresh the cached stats snapshot (recv-thread only).
+    UpdateStats(conn);
 }
 
 void QuicheServer::OnTimers() {

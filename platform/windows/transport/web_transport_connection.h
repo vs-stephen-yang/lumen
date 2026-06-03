@@ -34,7 +34,7 @@ public:
     TransportChannel* GetChannel(ChannelType type) override;
     ConnectionState GetState() const override { return state_.load(); }
     void SetStateCallback(ConnectionStateCallback callback) override;
-    TransportStats GetStats() const override { return {}; }
+    TransportStats GetStats() const override;
     void SetStatsCallback(StatsCallback /*callback*/) override {}
     Result<void> RequestKeyframe() override;
     Result<void> SendControlMessage(const uint8_t* data, size_t size) override;

@@ -35,6 +35,12 @@ WebTransportChannel* WebTransportConnection::ChannelByType(ChannelType type) {
     return nullptr;
 }
 
+TransportStats WebTransportConnection::GetStats() const {
+    TransportStats out;
+    if (server_) server_->GetConnectionStats(conn_id_, out);
+    return out;
+}
+
 void WebTransportConnection::SetStateCallback(ConnectionStateCallback callback) {
     std::lock_guard<std::mutex> lock(cb_mu_);
     state_callback_ = std::move(callback);

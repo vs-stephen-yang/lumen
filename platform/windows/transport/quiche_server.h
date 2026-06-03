@@ -14,6 +14,7 @@
 #include <ws2tcpip.h>
 
 #include "lumen/common/error.h"
+#include "lumen/transport/transport_types.h"
 
 #include <atomic>
 #include <cstdint>
@@ -114,15 +115,32 @@ public:
     /// Set a callback fired for each incoming WT datagram on any session.
     void SetOnWebTransportDatagram(WebTransportDatagramCallback cb);
 
-    /// Send a WebTransport datagram on the given session. The session_id
+    /// Queue a WebTransport datagram for the given session. The session_id
     /// varint is prepended automatically; the caller passes only the
-    /// application payload.
+    /// application payload. Thread-safe: the datagram is enqueued here and
+    /// actually written to the quiche connection on the recv thread, so no
+    /// foreign thread ever touches quiche_conn.
     Result<void> SendWebTransportDatagram(const std::string& conn_id,
                                           uint64_t session_id,
                                           const uint8_t* data, size_t size);
 
+    /// Latest cached transport stats for a connection (RTT, cwnd, loss,
+    /// bandwidth). Snapshotted on the recv thread; this read is lock-guarded
+    /// and never touches quiche_conn directly. Returns an error if the
+    /// connection is unknown.
+    Result<void> GetConnectionStats(const std::string& conn_id,
+                                    TransportStats& out) const;
+
 private:
     struct Connection;
+
+    /// A datagram queued by SendWebTransportDatagram, drained on the recv
+    /// thread. `payload` already includes the session_id varint prefix.
+    struct PendingSend {
+        std::string conn_id;
+        uint64_t session_id = 0;
+        std::vector<uint8_t> payload;
+    };
 
     void RecvLoop();
     void HandlePacket(const uint8_t* data, size_t size,
@@ -130,6 +148,8 @@ private:
     void DriveHttp3(Connection* conn);
     void DrainDatagrams(Connection* conn);
     void FlushEgress(Connection* conn);
+    void DrainSendQueue();
+    void UpdateStats(Connection* conn);
     void GcClosed();
     void OnTimers();
 
@@ -153,6 +173,14 @@ private:
     // address this connection).
     mutable std::mutex conns_mu_;
     std::unordered_map<std::string, std::unique_ptr<Connection>> conns_;
+
+    // Outbound datagrams queued from foreign threads, drained on the recv
+    // thread (see DrainSendQueue).
+    mutable std::mutex send_mu_;
+    std::vector<PendingSend> send_q_;
+
+    // Guards the cached per-connection TransportStats snapshot.
+    mutable std::mutex stats_mu_;
 };
 
 }  // namespace lumen
