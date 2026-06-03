@@ -13,8 +13,10 @@ out/
 Thumbs.db
 NUL
 
-# Claude
-.claude/
+# Claude — ignore local state but share the test-on-stop hook with the team.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
 
 # Test artifacts
 output.h264
