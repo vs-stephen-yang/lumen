@@ -57,6 +57,35 @@ Transport on Android needs A1; audio needs A2.
 - The Windows MSVC build + its test suite (and the Stop hook) stay green
   throughout — Android wiring lives entirely under `if(ANDROID)`.
 
+## A1 — verified cross-compile recipe (2026-06-05)
+
+quiche (incl. bundled BoringSSL) **does** cross-compile for Android from this
+Windows host. Proven manually for `aarch64-linux-android` → `libquiche.a`.
+Required:
+- `rustup target add aarch64-linux-android` (done).
+- A `build.rs` fix (committed): `get_boringssl_platform_output_path()` keyed off
+  `cfg!(target_env="msvc")`, which in a build script reflects the **host**, so
+  it wrongly appended a `Release/` subdir for the single-config Ninja Android
+  BoringSSL build. Now keys off `CARGO_CFG_TARGET_ENV` (the target). Windows
+  build unchanged (target_env stays `msvc`).
+- Build env (to encode into the CMake bridge in the remaining A1 work):
+  ```
+  ANDROID_NDK_HOME = <sdk>/ndk/28.2.13676358
+  CMAKE_GENERATOR  = Ninja                      # else CMake picks VS → MSBuild fails
+  PATH            += <sdk>/cmake/3.22.1/bin       # a real ninja.exe (NOT depot_tools)
+                   + <ndk>/toolchains/llvm/prebuilt/windows-x86_64/bin
+  CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = aarch64-linux-android29-clang.cmd
+  CARGO_TARGET_AARCH64_LINUX_ANDROID_AR     = llvm-ar.exe
+  CC/CXX/AR_aarch64_linux_android           = …29-clang(.cmd) / clang++ / llvm-ar
+  cargo build --target aarch64-linux-android --features ffi \
+      --manifest-path quiche/Cargo.toml --release
+  ```
+- **Remaining A1:** teach `third_party/quiche/CMakeLists.txt` to do the above
+  under `if(ANDROID)` (ABI→triple map, env via `${CMAKE_COMMAND} -E env`, output
+  at `target/<triple>/<profile>/libquiche.a`), re-enable `third_party` for
+  Android in root CMake, link a `quiche_version()` check from
+  `platform/android`.
+
 ## Notes / decisions needed
 - **Rust android targets** (A1): requires `rustup target add` — an environment
   change to approve.

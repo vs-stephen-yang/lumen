@@ -32,7 +32,12 @@ const CMAKE_PARAMS_ARM_LINUX: &[(&str, &[(&str, &str)])] = &[
 /// so adjust library location based on platform and build target.
 /// See issue: https://github.com/alexcrichton/cmake-rs/issues/18
 fn get_boringssl_platform_output_path() -> String {
-    if cfg!(target_env = "msvc") {
+    // Use the TARGET's env (CARGO_CFG_TARGET_ENV), not the build script's own
+    // cfg!, which reflects the HOST (msvc on Windows). When cross-compiling
+    // from a Windows host to e.g. aarch64-linux-android, BoringSSL is built
+    // single-config (Ninja) into out/build with no Release/ subdir.
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_env == "msvc" {
         // Code under this branch should match the logic in cmake-rs
         let debug_env_var =
             std::env::var("DEBUG").expect("DEBUG variable not defined in env");
