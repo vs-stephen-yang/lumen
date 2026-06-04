@@ -20,16 +20,6 @@ namespace {
 constexpr size_t kMaxDatagramSize = 1350;
 constexpr size_t kLocalConnIdLen  = 16;
 
-bool EnsureWsaStarted() {
-    static std::once_flag once;
-    static bool ok = false;
-    std::call_once(once, [] {
-        WSADATA wsa;
-        ok = WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
-    });
-    return ok;
-}
-
 bool RandomBytes(uint8_t* buf, size_t len) {
     return BCryptGenRandom(nullptr, buf, static_cast<ULONG>(len),
                             BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
@@ -97,10 +87,6 @@ QuicheServer::QuicheServer() = default;
 QuicheServer::~QuicheServer() { Shutdown(); }
 
 Result<void> QuicheServer::Initialize(const QuicheServerConfig& cfg) {
-    if (!EnsureWsaStarted()) {
-        return Error::Make(ErrorCode::kTransportError, "WSAStartup failed");
-    }
-
     user_cfg_ = cfg;
 
     quiche_cfg_ = quiche_config_new(QUICHE_PROTOCOL_VERSION);
@@ -194,10 +180,11 @@ Result<void> QuicheServer::Start() {
         return Error::Make(ErrorCode::kAlreadyInitialized);
     }
 
-    sock_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock_ == INVALID_SOCKET) {
+    sock_ = MakeUdpSocket();
+    if (auto r = sock_->Open(); !r) {
+        sock_.reset();
         running_.store(false);
-        return Error::Make(ErrorCode::kTransportError, "socket() failed");
+        return r.error();
     }
 
     sockaddr_in addr = {};
@@ -205,23 +192,16 @@ Result<void> QuicheServer::Start() {
     addr.sin_port   = htons(user_cfg_.port);
     inet_pton(AF_INET, user_cfg_.address.c_str(), &addr.sin_addr);
 
-    if (::bind(sock_, reinterpret_cast<sockaddr*>(&addr),
-                 sizeof(addr)) == SOCKET_ERROR) {
-        const int err = WSAGetLastError();
-        closesocket(sock_);
-        sock_ = INVALID_SOCKET;
+    if (auto r = sock_->Bind(reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+        !r) {
+        sock_.reset();
         running_.store(false);
-        return Error::Make(ErrorCode::kTransportError,
-                            "bind() failed: " + std::to_string(err));
+        return r.error();
     }
 
-    sockaddr_in actual = {};
-    int actual_len = sizeof(actual);
-    if (getsockname(sock_, reinterpret_cast<sockaddr*>(&actual),
-                     &actual_len) == 0) {
-        bound_port_ = ntohs(actual.sin_port);
-        std::memcpy(&local_addr_, &actual, actual_len);
-        local_addr_len_ = actual_len;
+    if (sock_->GetLocalAddr(local_addr_, local_addr_len_).ok()) {
+        bound_port_ =
+            ntohs(reinterpret_cast<sockaddr_in*>(&local_addr_)->sin_port);
     } else {
         bound_port_ = user_cfg_.port;
     }
@@ -232,10 +212,7 @@ Result<void> QuicheServer::Start() {
 
 void QuicheServer::Stop() {
     if (!running_.exchange(false)) return;
-    if (sock_ != INVALID_SOCKET) {
-        closesocket(sock_);
-        sock_ = INVALID_SOCKET;
-    }
+    if (sock_) sock_->Close();  // unblocks WaitReadable in the recv loop
     if (recv_thread_.joinable()) recv_thread_.join();
 }
 
@@ -383,29 +360,18 @@ void QuicheServer::RecvLoop() {
     std::vector<uint8_t> buf(65535);
 
     while (running_.load()) {
-        // select() with a short timeout so we can also fire connection
-        // timers between packets.
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(sock_, &fds);
-        timeval tv = {0, 50 * 1000};  // 50ms
-        int sel = ::select(0, &fds, nullptr, nullptr, &tv);
-        if (sel == SOCKET_ERROR) break;
-
-        if (sel > 0 && FD_ISSET(sock_, &fds)) {
+        // Short readiness wait so we can also fire connection timers and drain
+        // queued sends between packets.
+        if (sock_->WaitReadable(50)) {
             sockaddr_storage peer = {};
-            int peer_len = sizeof(peer);
-            int n = ::recvfrom(sock_,
-                               reinterpret_cast<char*>(buf.data()),
-                               static_cast<int>(buf.size()), 0,
-                               reinterpret_cast<sockaddr*>(&peer),
-                               &peer_len);
-            if (n == SOCKET_ERROR) {
+            socklen_t peer_len = sizeof(peer);
+            int64_t n = sock_->Recv(buf.data(), buf.size(), peer, peer_len);
+            if (n < 0) {
                 if (!running_.load()) break;
-                continue;
+            } else if (n > 0) {
+                HandlePacket(buf.data(), static_cast<size_t>(n), peer,
+                             peer_len);
             }
-            HandlePacket(buf.data(), static_cast<size_t>(n), peer,
-                         static_cast<socklen_t>(peer_len));
         }
 
         DrainSendQueue();
@@ -604,10 +570,8 @@ void QuicheServer::FlushEgress(Connection* conn) {
         if (written == QUICHE_ERR_DONE) break;
         if (written < 0) return;
 
-        ::sendto(sock_, reinterpret_cast<const char*>(out),
-                 static_cast<int>(written), 0,
-                 reinterpret_cast<const sockaddr*>(&si.to),
-                 static_cast<int>(si.to_len));
+        sock_->SendTo(out, static_cast<size_t>(written),
+                      reinterpret_cast<const sockaddr*>(&si.to), si.to_len);
     }
 
     // Schedule the next timer for this connection.

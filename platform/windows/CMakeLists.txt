@@ -20,6 +20,7 @@ set(LUMEN_PLATFORM_WIN_SOURCES
     transport/ws_transport_channel.cpp
     transport/ws_transport_connection.cpp
     transport/ws_transport_server.cpp
+    transport/udp_socket_win.cpp
     transport/quiche_server.cpp
     transport/quiche_client.cpp
     transport/wt_varint.cpp

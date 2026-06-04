@@ -15,6 +15,7 @@
 
 #include "lumen/common/error.h"
 #include "lumen/transport/transport_types.h"
+#include "lumen/transport/udp_socket.h"
 
 #include <atomic>
 #include <cstdint>
@@ -161,7 +162,7 @@ private:
     WebTransportSessionCallback wt_callback_;
     WebTransportDatagramCallback dgram_callback_;
 
-    SOCKET sock_ = INVALID_SOCKET;
+    std::unique_ptr<UdpSocket> sock_;
     sockaddr_storage local_addr_ = {};
     socklen_t local_addr_len_ = 0;
     uint16_t bound_port_ = 0;

@@ -18,16 +18,6 @@ namespace {
 constexpr size_t kMaxDatagramSize = 1350;
 constexpr size_t kLocalConnIdLen  = 16;
 
-bool EnsureWsaStarted() {
-    static std::once_flag once;
-    static bool ok = false;
-    std::call_once(once, [] {
-        WSADATA wsa;
-        ok = WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
-    });
-    return ok;
-}
-
 bool RandomBytes(uint8_t* buf, size_t len) {
     return BCryptGenRandom(nullptr, buf, static_cast<ULONG>(len),
                             BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
@@ -40,9 +30,6 @@ QuicheClient::QuicheClient() = default;
 QuicheClient::~QuicheClient() { Shutdown(); }
 
 Result<void> QuicheClient::Initialize(const QuicheClientConfig& cfg) {
-    if (!EnsureWsaStarted()) {
-        return Error::Make(ErrorCode::kTransportError, "WSAStartup failed");
-    }
     cfg_ = cfg;
 
     quiche_cfg_ = quiche_config_new(QUICHE_PROTOCOL_VERSION);
@@ -92,18 +79,18 @@ Result<void> QuicheClient::Start() {
         return Error::Make(ErrorCode::kAlreadyInitialized);
     }
 
-    sock_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock_ == INVALID_SOCKET) {
+    sock_ = MakeUdpSocket();
+    if (auto r = sock_->Open(); !r) {
+        sock_.reset();
         running_.store(false);
-        return Error::Make(ErrorCode::kTransportError, "socket() failed");
+        return r.error();
     }
 
     sockaddr_in peer = {};
     peer.sin_family = AF_INET;
     peer.sin_port   = htons(cfg_.port);
     if (inet_pton(AF_INET, cfg_.host.c_str(), &peer.sin_addr) != 1) {
-        closesocket(sock_);
-        sock_ = INVALID_SOCKET;
+        sock_.reset();
         running_.store(false);
         return Error::Make(ErrorCode::kTransportAddressInvalid, cfg_.host);
     }
@@ -112,26 +99,23 @@ Result<void> QuicheClient::Start() {
 
     // connect() the UDP socket so the OS picks a concrete source address that
     // getsockname can report (needed as the local address in recv_info).
-    if (::connect(sock_, reinterpret_cast<sockaddr*>(&peer), sizeof(peer)) ==
-        SOCKET_ERROR) {
-        const int err = WSAGetLastError();
-        closesocket(sock_);
-        sock_ = INVALID_SOCKET;
+    if (auto r = sock_->Connect(reinterpret_cast<sockaddr*>(&peer),
+                                sizeof(peer));
+        !r) {
+        sock_.reset();
         running_.store(false);
-        return Error::Make(ErrorCode::kTransportConnectionFailed,
-                            "connect() failed: " + std::to_string(err));
+        return r.error();
     }
 
-    sockaddr_in local = {};
-    int local_len = sizeof(local);
-    getsockname(sock_, reinterpret_cast<sockaddr*>(&local), &local_len);
-    std::memcpy(&local_addr_, &local, local_len);
-    local_addr_len_ = local_len;
+    if (auto r = sock_->GetLocalAddr(local_addr_, local_addr_len_); !r) {
+        sock_.reset();
+        running_.store(false);
+        return r.error();
+    }
 
     uint8_t scid[kLocalConnIdLen];
     if (!RandomBytes(scid, kLocalConnIdLen)) {
-        closesocket(sock_);
-        sock_ = INVALID_SOCKET;
+        sock_.reset();
         running_.store(false);
         return Error::Make(ErrorCode::kTransportError, "RandomBytes failed");
     }
@@ -142,8 +126,7 @@ Result<void> QuicheClient::Start() {
         reinterpret_cast<const sockaddr*>(&peer_addr_), peer_addr_len_,
         quiche_cfg_);
     if (!qc_) {
-        closesocket(sock_);
-        sock_ = INVALID_SOCKET;
+        sock_.reset();
         running_.store(false);
         return Error::Make(ErrorCode::kTransportConnectionFailed,
                             "quiche_connect failed");
@@ -155,10 +138,7 @@ Result<void> QuicheClient::Start() {
 
 void QuicheClient::Stop() {
     if (!running_.exchange(false)) return;
-    if (sock_ != INVALID_SOCKET) {
-        closesocket(sock_);
-        sock_ = INVALID_SOCKET;
-    }
+    if (sock_) sock_->Close();  // unblocks WaitReadable in the recv loop
     if (recv_thread_.joinable()) recv_thread_.join();
 }
 
@@ -211,32 +191,23 @@ void QuicheClient::RecvLoop() {
     FlushEgress();
 
     while (running_.load()) {
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(sock_, &fds);
-        timeval tv = {0, 50 * 1000};  // 50ms
-        int sel = ::select(0, &fds, nullptr, nullptr, &tv);
-        if (sel == SOCKET_ERROR) break;
-
-        if (sel > 0 && FD_ISSET(sock_, &fds)) {
+        if (sock_->WaitReadable(50)) {
             sockaddr_storage from = {};
-            int from_len = sizeof(from);
-            int n = ::recvfrom(sock_, reinterpret_cast<char*>(buf.data()),
-                               static_cast<int>(buf.size()), 0,
-                               reinterpret_cast<sockaddr*>(&from), &from_len);
-            if (n == SOCKET_ERROR) {
+            socklen_t from_len = sizeof(from);
+            int64_t n = sock_->Recv(buf.data(), buf.size(), from, from_len);
+            if (n < 0) {
                 if (!running_.load()) break;
             } else if (n > 0) {
                 quiche_recv_info ri = {
                     reinterpret_cast<sockaddr*>(&from),
-                    static_cast<socklen_t>(from_len),
+                    from_len,
                     reinterpret_cast<sockaddr*>(&local_addr_),
                     local_addr_len_,
                 };
                 (void)quiche_conn_recv(qc_, buf.data(),
                                        static_cast<size_t>(n), &ri);
             }
-        } else if (sel == 0) {
+        } else {
             quiche_conn_on_timeout(qc_);
         }
 
@@ -337,10 +308,8 @@ void QuicheClient::FlushEgress() {
         ssize_t written = quiche_conn_send(qc_, out, sizeof(out), &si);
         if (written == QUICHE_ERR_DONE) break;
         if (written < 0) return;
-        ::sendto(sock_, reinterpret_cast<const char*>(out),
-                 static_cast<int>(written), 0,
-                 reinterpret_cast<const sockaddr*>(&si.to),
-                 static_cast<int>(si.to_len));
+        sock_->SendTo(out, static_cast<size_t>(written),
+                      reinterpret_cast<const sockaddr*>(&si.to), si.to_len);
     }
 }
 

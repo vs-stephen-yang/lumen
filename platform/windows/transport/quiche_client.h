@@ -16,6 +16,7 @@
 
 #include "lumen/common/error.h"
 #include "lumen/transport/transport_types.h"
+#include "lumen/transport/udp_socket.h"
 
 #include <atomic>
 #include <cstdint>
@@ -100,7 +101,7 @@ private:
     quiche_conn*      qc_         = nullptr;
     quiche_h3_conn*   h3_         = nullptr;
 
-    SOCKET sock_ = INVALID_SOCKET;
+    std::unique_ptr<UdpSocket> sock_;
     sockaddr_storage local_addr_ = {};
     socklen_t        local_addr_len_ = 0;
     sockaddr_storage peer_addr_ = {};
