@@ -38,6 +38,14 @@ target_include_directories(mock_contract_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/transport/include
 )
 
+# Cross-platform jitter buffer unit tests (clock injected — deterministic).
+add_executable(jitter_buffer_test
+    jitter_buffer_test.cpp
+)
+target_link_libraries(jitter_buffer_test PRIVATE
+    lumen_jitter_buffer
+)
+
 if(WIN32)
     # Phase 2.1 — QuicheServer end-to-end QUIC handshake smoke test.
     add_executable(quiche_server_smoke_test
