@@ -25,6 +25,19 @@ add_executable(quiche_smoke_test
 )
 target_link_libraries(quiche_smoke_test PRIVATE quiche)
 
+# Cross-platform contract tests for the test-double mocks (header-only, no
+# platform backends — runs on any OS).
+add_executable(mock_contract_test
+    mock_contract_test.cpp
+)
+target_include_directories(mock_contract_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/mocks
+    ${CMAKE_SOURCE_DIR}/src/common/include
+    ${CMAKE_SOURCE_DIR}/src/codec/include
+    ${CMAKE_SOURCE_DIR}/src/renderer/include
+    ${CMAKE_SOURCE_DIR}/src/transport/include
+)
+
 if(WIN32)
     # Phase 2.1 — QuicheServer end-to-end QUIC handshake smoke test.
     add_executable(quiche_server_smoke_test

@@ -4,6 +4,7 @@
 #include "lumen/transport/transport_types.h"
 
 #include <mutex>
+#include <optional>
 #include <vector>
 
 namespace lumen {
@@ -18,6 +19,7 @@ public:
     Result<size_t> Send(const uint8_t* data, size_t size,
                         const SendOptions& options) override {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (send_error_) return Error::Make(*send_error_, "mock send");
         sent_data_.emplace_back(data, data + size);
         sent_options_.push_back(options);
         return size;
@@ -28,7 +30,10 @@ public:
         receive_callback_ = std::move(callback);
     }
 
-    size_t GetSendCapacity() const override { return 1024 * 1024; }
+    size_t GetSendCapacity() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return send_capacity_;
+    }
 
     void SetReadyToSendCallback(ReadyToSendCallback callback) override {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -77,6 +82,18 @@ public:
         return sent_data_.size();
     }
 
+    /// Make Send() fail with `c` (e.g. kTransportChannelFull).
+    void FailSendWith(ErrorCode c) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        send_error_ = c;
+    }
+
+    /// Override the reported send capacity (0 simulates backpressure).
+    void SetSendCapacity(size_t bytes) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        send_capacity_ = bytes;
+    }
+
 private:
     ChannelType type_;
     SendPriority priority_;
@@ -85,6 +102,8 @@ private:
     std::vector<SendOptions> sent_options_;
     DataReceivedCallback receive_callback_;
     ReadyToSendCallback ready_callback_;
+    std::optional<ErrorCode> send_error_;
+    size_t send_capacity_ = 1024 * 1024;
 };
 
 }  // namespace lumen

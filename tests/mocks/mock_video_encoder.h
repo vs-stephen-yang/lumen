@@ -2,6 +2,7 @@
 
 #include "lumen/codec/video_encoder.h"
 
+#include <optional>
 #include <vector>
 
 namespace lumen {
@@ -20,6 +21,8 @@ public:
     Result<void> Encode(void* /*native_texture*/,
                         const FrameMetadata& metadata) override {
         encode_count_++;
+
+        if (encode_error_) return Error::Make(*encode_error_, "mock encode");
 
         if (output_callback_) {
             EncodedPacket packet;
@@ -59,6 +62,7 @@ public:
     VideoCodec GetCodec() const override { return config_.codec; }
 
     // Test helpers
+    void FailEncodeWith(ErrorCode c) { encode_error_ = c; }
     bool IsInitialized() const { return initialized_; }
     uint32_t EncodeCount() const { return encode_count_; }
 
@@ -68,6 +72,7 @@ private:
     uint32_t encode_count_ = 0;
     VideoEncoderConfig config_;
     EncodedPacketCallback output_callback_;
+    std::optional<ErrorCode> encode_error_;
 };
 
 }  // namespace lumen

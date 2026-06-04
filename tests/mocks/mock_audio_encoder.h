@@ -2,6 +2,7 @@
 
 #include "lumen/codec/audio_encoder.h"
 
+#include <optional>
 #include <vector>
 
 namespace lumen {
@@ -20,6 +21,8 @@ public:
                         Timestamp timestamp_us) override {
         encode_count_++;
         total_frames_ += frame_count;
+
+        if (encode_error_) return Error::Make(*encode_error_, "mock encode");
 
         if (output_callback_) {
             EncodedAudioPacket packet;
@@ -46,6 +49,7 @@ public:
     AudioCodec GetCodec() const override { return config_.codec; }
 
     // Test helpers
+    void FailEncodeWith(ErrorCode c) { encode_error_ = c; }
     bool IsInitialized() const { return initialized_; }
     uint32_t EncodeCount() const { return encode_count_; }
     uint32_t TotalFrames() const { return total_frames_; }
@@ -56,6 +60,7 @@ private:
     uint32_t total_frames_ = 0;
     AudioEncoderConfig config_;
     EncodedAudioCallback output_callback_;
+    std::optional<ErrorCode> encode_error_;
 };
 
 }  // namespace lumen
