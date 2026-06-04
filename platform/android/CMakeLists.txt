@@ -1,0 +1,18 @@
+# Android platform backend (Phase 2). Built only for ANDROID (NDK) configures.
+#
+# A0: links the portable core + the POSIX UDP socket so they compile under the
+# NDK. Real capture/codec/render/transport backends are added in A3-A6.
+add_library(lumen_platform_android STATIC
+    android_backend.cpp
+)
+
+target_include_directories(lumen_platform_android PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(lumen_platform_android PUBLIC
+    lumen_common
+    lumen_transport
+    lumen_jitter_buffer
+    lumen_platform_posix
+)

@@ -22,7 +22,8 @@ public:
         uint32_t target_delay_ms = 40;
     };
 
-    explicit AudioJitterBuffer(Config config = {});
+    AudioJitterBuffer() : AudioJitterBuffer(Config{}) {}
+    explicit AudioJitterBuffer(Config config);
 
     void Push(const uint8_t* data, size_t size, const MediaPacketHeader& hdr,
               uint64_t now_us);

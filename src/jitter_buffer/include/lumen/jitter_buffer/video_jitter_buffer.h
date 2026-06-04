@@ -25,7 +25,8 @@ public:
         uint32_t fps = 30;              // reserved for future pacing
     };
 
-    explicit VideoJitterBuffer(Config config = {});
+    VideoJitterBuffer() : VideoJitterBuffer(Config{}) {}
+    explicit VideoJitterBuffer(Config config);
 
     /// Add a reassembled frame. `data`/`size` is the frame payload (no header).
     void Push(const uint8_t* data, size_t size, const MediaPacketHeader& hdr,
