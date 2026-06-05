@@ -15,11 +15,9 @@ if(MSVC)
         CACHE STRING "Forced /MD for Rust-staticlib compatibility" FORCE)
 endif()
 
-# third_party (quiche/cargo, cpp-httplib) is host/Windows-oriented today.
-# The Android core build (Phase 2 A0) skips it; quiche-for-Android is A1.
-if(NOT ANDROID)
-    add_subdirectory(third_party)
-endif()
+# third_party builds quiche (cross-compiled for Android via the cargo bridge);
+# cpp-httplib is gated off for Android inside third_party/CMakeLists.txt.
+add_subdirectory(third_party)
 
 add_subdirectory(src)
 

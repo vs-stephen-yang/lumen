@@ -15,4 +15,10 @@ target_link_libraries(lumen_platform_android PUBLIC
     lumen_transport
     lumen_jitter_buffer
     lumen_platform_posix
+    quiche            # cross-compiled for Android by the cargo bridge (A1)
 )
+
+# A1 link check: forces the full Android link chain — quiche + bundled
+# BoringSSL + the POSIX socket + portable core — to link into an executable.
+add_executable(android_quiche_linkcheck quiche_linkcheck.cpp)
+target_link_libraries(android_quiche_linkcheck PRIVATE lumen_platform_android)
