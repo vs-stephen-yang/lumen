@@ -86,6 +86,32 @@ Required:
   Android in root CMake, link a `quiche_version()` check from
   `platform/android`.
 
+## A2 — opus for Android (done)
+
+`opus:arm64-android` built via vcpkg (only manifest dep), then `lumen_codec`
+compiles + links for Android.
+```
+ANDROID_NDK_HOME=<ndk> vcpkg install --triplet arm64-android \
+    --x-install-root=vcpkg_installed          # -> vcpkg_installed/arm64-android/lib/libopus.a
+```
+The NDK toolchain restricts `find_package` to the sysroot, so the Android
+configure must point at the vcpkg prefix AND allow package search outside the
+root.
+
+## Full Android configure (A0–A2, arm64-v8a)
+```
+cmake -S . -B build-android -G Ninja \
+  -DCMAKE_MAKE_PROGRAM=<sdk>/cmake/3.22.1/bin/ninja.exe \
+  -DCMAKE_TOOLCHAIN_FILE=<ndk>/build/cmake/android.toolchain.cmake \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
+  -DCMAKE_PREFIX_PATH=<repo>/vcpkg_installed/arm64-android \
+  -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH
+cmake --build build-android --target android_quiche_linkcheck
+```
+Builds + links core + POSIX socket + quiche + BoringSSL + libopus for Android.
+(`build-android/` and `vcpkg_installed/` are gitignored; regenerate per the
+above.)
+
 ## Notes / decisions needed
 - **Rust android targets** (A1): requires `rustup target add` — an environment
   change to approve.

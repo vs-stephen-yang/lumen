@@ -14,6 +14,7 @@ target_link_libraries(lumen_platform_android PUBLIC
     lumen_common
     lumen_transport
     lumen_jitter_buffer
+    lumen_codec       # Opus (libopus arm64-android, A2)
     lumen_platform_posix
     quiche            # cross-compiled for Android by the cargo bridge (A1)
 )

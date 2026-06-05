@@ -9,15 +9,19 @@
 
 #include "lumen/jitter_buffer/video_jitter_buffer.h"
 #include "lumen/transport/udp_socket.h"
+#include "opus/opus_audio_decoder.h"
 
 namespace lumen {
 
-/// Link check: pulls in MakeUdpSocket() (POSIX impl) and the jitter buffer so
-/// the Android core build fails fast on any portability regression.
+/// Link check: pulls in MakeUdpSocket() (POSIX impl), the jitter buffer, and
+/// the Opus decoder (libopus, arm64-android) so the Android core build fails
+/// fast on any portability or link regression.
 bool AndroidCoreLinkCheck() {
     std::unique_ptr<UdpSocket> sock = MakeUdpSocket();
     VideoJitterBuffer jb;
-    return sock != nullptr && jb.Size() == 0;
+    OpusAudioDecoder dec;
+    const bool dec_ok = dec.Initialize(AudioDecoderConfig{}).ok();
+    return sock != nullptr && jb.Size() == 0 && dec_ok;
 }
 
 }  // namespace lumen
