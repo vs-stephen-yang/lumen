@@ -7,12 +7,14 @@ target_link_libraries(web_receiver PRIVATE
     lumen_signaling
 )
 
-# Copy the static test page next to the executable so web_receiver can
-# serve it without a Vite build. This is for the connectivity check
-# only — once S6 lands, the receiver will instead serve web/dist/.
+# Deploy the sender web root next to the executable. Prefers the
+# productionized Vite build (web/dist) when it exists, else falls back to the
+# legacy inline test page. Served at /sender/ by the signaling server.
 add_custom_command(TARGET web_receiver POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/test_page
-            $<TARGET_FILE_DIR:web_receiver>/test_page
-    COMMENT "Copying web_receiver test page next to the executable"
+    COMMAND ${CMAKE_COMMAND}
+            -DWEB_DIST=${CMAKE_SOURCE_DIR}/web/dist
+            -DTEST_PAGE=${CMAKE_CURRENT_SOURCE_DIR}/test_page
+            -DOUT_DIR=$<TARGET_FILE_DIR:web_receiver>/test_page
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/deploy_web_root.cmake
+    COMMENT "Deploying web_receiver sender root (web/dist if built, else test_page)"
 )
