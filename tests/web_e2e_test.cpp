@@ -206,6 +206,11 @@ void test_browser_to_receiver_round_trip() {
     // signals completion via a control-channel "done:..." datagram.
     // The receiver picks that up and prints FINAL_STATS, which we wait
     // for here.
+    // Drive the example app's CAMERA source: a Chrome fake device gives a
+    // steady 30fps 320x240 stream (deterministic). Headless getDisplayMedia
+    // (screen) yields a near-static surface with almost no frames, so the
+    // real screen path is verified manually in a browser (see web/README);
+    // ?source=camera exercises the same SDK send path end-to-end.
     std::string chrome_cmd = "\"" + chrome_bs + "\""
         " --headless=new"
         " --user-data-dir=\"" + user_data + "\""
@@ -213,7 +218,7 @@ void test_browser_to_receiver_round_trip() {
         " --use-fake-ui-for-media-stream"
         " --autoplay-policy=no-user-gesture-required"
         " \"http://localhost:" + std::to_string(kSignalPort) +
-        "/sender/?frames=120&seconds=8\"";
+        "/sender/?source=camera&frames=120&seconds=8\"";
 
     ChildJob chrome_job;
     CHECK_AND_DUMP(chrome_job.Spawn(chrome_cmd, dom_path), "spawn chrome");

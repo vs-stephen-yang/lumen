@@ -7,20 +7,24 @@
     <style>
         body { font-family: system-ui, sans-serif; margin: 2em; max-width: 720px; }
         h1 { font-size: 1.2em; }
+        button { font-size: 1em; padding: 8px 16px; margin: 8px 0; }
         #log div { padding: 4px 0; border-bottom: 1px solid #eee; font-family: monospace; }
         .info { color: #333; }
         .err  { color: #c33; font-weight: bold; }
         #fps  { font-family: monospace; font-size: 1.05em; padding: 6px 0; }
+        #status { font-weight: bold; }
     </style>
 </head>
 <body>
-    <h1>Lumen WebCodecs → WebTransport sender</h1>
-    <p>Captures a synthetic video+mic stream, encodes via WebCodecs, prepends a
-       MediaPacketHeader + channel byte, fragments to fit a WebTransport
-       datagram, and ships them to the native receiver.</p>
-    <div id="fps">fps: pending…</div>
-    <div id="log"></div>
+    <h1>Lumen — screen share (Lumen Web SDK example)</h1>
+    <p>Demonstrates the Lumen web sender SDK: capture the screen with
+       <code>getDisplayMedia</code>, hand the stream to <code>LumenSender</code>,
+       and stream it to the native receiver over WebTransport.</p>
+    <button id="start">Start screen share</button>
+    <button id="stop" disabled>Stop</button>
+    <div id="fps">idle</div>
     <div id="status">PENDING</div>
-    <script type="module" src="/src/main.js"></script>
+    <div id="log"></div>
+    <script type="module" src="./app.js"></script>
 </body>
 </html>

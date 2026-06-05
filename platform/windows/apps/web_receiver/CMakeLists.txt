@@ -12,9 +12,9 @@ target_link_libraries(web_receiver PRIVATE
 # legacy inline test page. Served at /sender/ by the signaling server.
 add_custom_command(TARGET web_receiver POST_BUILD
     COMMAND ${CMAKE_COMMAND}
-            -DWEB_DIST=${CMAKE_SOURCE_DIR}/web/dist
+            -DWEB_DIST=${CMAKE_SOURCE_DIR}/web/examples/screen-share/dist
             -DTEST_PAGE=${CMAKE_CURRENT_SOURCE_DIR}/test_page
             -DOUT_DIR=$<TARGET_FILE_DIR:web_receiver>/test_page
             -P ${CMAKE_CURRENT_SOURCE_DIR}/deploy_web_root.cmake
-    COMMENT "Deploying web_receiver sender root (web/dist if built, else test_page)"
+    COMMENT "Deploying web_receiver sender root (web SDK example build if present, else test_page)"
 )
