@@ -4,6 +4,8 @@
 # NDK. Real capture/codec/render/transport backends are added in A3-A6.
 add_library(lumen_platform_android STATIC
     android_backend.cpp
+    codec/mediacodec_video_decoder.cpp   # A3: AMediaCodec video decode
+    codec/mediacodec_video_encoder.cpp   # A3: AMediaCodec video encode
 )
 
 target_include_directories(lumen_platform_android PUBLIC
@@ -17,6 +19,9 @@ target_link_libraries(lumen_platform_android PUBLIC
     lumen_codec       # Opus (libopus arm64-android, A2)
     lumen_platform_posix
     quiche            # cross-compiled for Android by the cargo bridge (A1)
+    mediandk          # AMediaCodec / AMediaFormat (A3)
+    android           # ANativeWindow
+    log
 )
 
 # A1 link check: forces the full Android link chain — quiche + bundled
