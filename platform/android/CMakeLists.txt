@@ -28,3 +28,7 @@ target_link_libraries(lumen_platform_android PUBLIC
 # BoringSSL + the POSIX socket + portable core — to link into an executable.
 add_executable(android_quiche_linkcheck quiche_linkcheck.cpp)
 target_link_libraries(android_quiche_linkcheck PRIVATE lumen_platform_android)
+
+# A6: the JNI bridge shared library the Android app loads (liblumen_android.so).
+add_library(lumen_android SHARED jni/lumen_jni.cpp)
+target_link_libraries(lumen_android PRIVATE lumen_platform_android)
